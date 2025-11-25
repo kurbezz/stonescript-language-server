@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -38,6 +38,21 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          path: stonescript-language-server
+
+      - name: Checkout tree-sitter-stonescript
+        uses: actions/checkout@v4
+        with:
+          repository: kurbezz/tree-sitter-stonescript
+          path: tree-sitter-stonescript
+
+      - name: Setup directory structure
+        shell: bash
+        run: |
+          ls -la
+          mv stonescript-language-server stone-script-lsp
+          ls -la
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -59,26 +74,27 @@ jobs:
       - name: Cache target directory
         uses: actions/cache@v4
         with:
-          path: target
+          path: stone-script-lsp/target
           key: ${{ runner.os }}-${{ matrix.target }}-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build
+        working-directory: stone-script-lsp
         run: cargo build --release --target ${{ matrix.target }} --bin stonescript-lsp
 
       - name: Prepare archive (Unix)
         if: matrix.archive == 'tar.gz'
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../stonescript-lsp-${{ matrix.target }}.tar.gz stonescript-lsp
-          cd ../../..
+          cd stone-script-lsp/target/${{ matrix.target }}/release
+          tar czf ../../../../stonescript-lsp-${{ matrix.target }}.tar.gz stonescript-lsp
+          cd ../../../..
 
       - name: Prepare archive (Windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          cd target/${{ matrix.target }}/release
-          Compress-Archive -Path stonescript-lsp.exe -DestinationPath ../../../stonescript-lsp-${{ matrix.target }}.zip
-          cd ../../..
+          cd stone-script-lsp/target/${{ matrix.target }}/release
+          Compress-Archive -Path stonescript-lsp.exe -DestinationPath ../../../../stonescript-lsp-${{ matrix.target }}.zip
+          cd ../../../..
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
