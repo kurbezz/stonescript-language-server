@@ -1,5 +1,5 @@
 //! StoneScript Parser
-//! 
+//!
 //! Wrapper around tree-sitter-stonescript parser
 
 use tree_sitter::{Language, Parser, Tree};
@@ -51,7 +51,7 @@ mod tests {
         let source = "?hp < 10\n  activate potion";
         let tree = parse(source).expect("Failed to parse");
         let root = tree.root_node();
-        
+
         // Find conditional node
         let conditional = root.child(0).expect("No child node");
         assert_eq!(conditional.kind(), "conditional");
@@ -62,41 +62,8 @@ mod tests {
         let source = "func test(a, b)\n  return a + b";
         let tree = parse(source).expect("Failed to parse");
         let root = tree.root_node();
-        
+
         let func_decl = root.child(0).expect("No function declaration");
         assert_eq!(func_decl.kind(), "function_declaration");
-    }
-}
-
-#[cfg(test)]
-mod test_real_file {
-    use super::*;
-    
-    #[test]
-    fn test_parse_test_ss() {
-        let source = std::fs::read_to_string("/Users/kurbezz/Projects/stonescript/test.ss")
-            .expect("Failed to read test.ss");
-        
-        let tree = parse(&source).expect("Failed to parse");
-        let root = tree.root_node();
-        
-        fn count_errors(node: tree_sitter::Node) -> usize {
-            let mut count = if node.is_error() || node.is_missing() { 1 } else { 0 };
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    count += count_errors(child);
-                }
-            }
-            count
-        }
-        
-        let error_count = count_errors(root);
-        eprintln!("Parse errors: {}", error_count);
-        
-        if error_count > 0 {
-            eprintln!("Tree: {}", root.to_sexp());
-        }
-        
-        assert_eq!(error_count, 0, "Expected no parse errors");
     }
 }
