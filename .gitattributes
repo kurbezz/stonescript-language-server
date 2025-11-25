@@ -1,0 +1,27 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Source code
+*.rs text
+*.toml text
+
+# Documentation
+*.md text
+*.txt text
+
+# Scripts
+*.sh text eol=lf
+
+# Configuration files
+Cargo.lock text
+
+# Git
+.gitattributes text
+.gitignore text
+
+# Binary files
+*.rlib binary
+*.so binary
+*.dylib binary
+*.dll binary
+*.exe binary
