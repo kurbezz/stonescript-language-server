@@ -20,7 +20,22 @@ A Language Server Protocol (LSP) implementation for the StoneScript programming 
 
 ## Installation
 
+### Automatic (Recommended)
+
+The easiest way to use the StoneScript Language Server is through the [Zed StoneScript extension](https://github.com/kurbezz/zed-stonescript):
+
+1. Install the StoneScript extension in Zed
+2. The LSP server will be automatically downloaded and installed on first use
+3. No manual setup required!
+
+The extension automatically manages LSP updates and provides pre-built binaries for:
+- macOS (Apple Silicon & Intel)
+- Linux (x86_64)
+- Windows (x86_64)
+
 ### From Source
+
+For development or custom builds:
 
 ```bash
 git clone https://github.com/kurbezz/stonescript-language-server.git
@@ -71,9 +86,9 @@ require'lspconfig'.stonescript_lsp.setup{
 }
 ```
 
-#### Zed
+#### Zed (Recommended)
 
-See the [zed-stonescript](https://github.com/kurbezz/zed-stonescript) extension for automatic LSP integration.
+Install the [zed-stonescript](https://github.com/kurbezz/zed-stonescript) extension for automatic LSP installation and configuration. No manual setup required!
 
 ## Project Structure
 
@@ -163,6 +178,13 @@ MIT License - see LICENSE file for details
 - [Stone Story RPG](https://stonestoryrpg.com/)
 - [StoneScript Documentation](https://stonestoryrpg.com/stonescript/)
 - [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
+
+## Pre-built Binaries
+
+Pre-built binaries are automatically released for each version via GitHub Actions:
+- Download from [GitHub Releases](https://github.com/kurbezz/stonescript-language-server/releases)
+- Supported platforms: macOS (ARM64/x86_64), Linux (x86_64), Windows (x86_64)
+- The Zed extension uses these binaries automatically
 
 ## Acknowledgments
 
