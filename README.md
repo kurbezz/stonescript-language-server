@@ -38,17 +38,35 @@ The extension automatically manages LSP updates and provides pre-built binaries 
 For development or custom builds:
 
 ```bash
+# Clone both repositories (LSP depends on tree-sitter grammar)
 git clone https://github.com/kurbezz/stonescript-language-server.git
-cd stone-script-lsp
+git clone https://github.com/kurbezz/tree-sitter-stonescript.git
+
+# Build the LSP
+cd stonescript-language-server
 cargo build --release
 ```
 
 The compiled binary will be available at `target/release/stonescript-lsp`.
 
+**Important:** The LSP requires the tree-sitter-stonescript repository to be in the parent directory during build. Expected structure:
+```
+parent-dir/
+├── stonescript-language-server/
+└── tree-sitter-stonescript/
+```
+
+You can test your local build with:
+```bash
+cd stonescript-language-server
+./scripts/test-build.sh
+```
+
 ### Prerequisites
 
 - Rust 1.70 or later
 - Cargo
+- C compiler (gcc, clang, or MSVC) - required for building tree-sitter parser
 
 ## Usage
 
