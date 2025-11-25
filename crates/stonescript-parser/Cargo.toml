@@ -1,0 +1,15 @@
+[package]
+name = "stonescript-parser"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+tree-sitter = { workspace = true }
+
+[build-dependencies]
+cc = "1"
+
+[lib]
+path = "src/lib.rs"

@@ -1,0 +1,33 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+*.rlib
+*.rmeta
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS files
+Thumbs.db
+
+# Node modules (if used)
+node_modules/
+npm-debug.log
+
+# Build outputs
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Generated files
+*.profraw
+*.profdata
+
+manual.html
