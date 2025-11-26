@@ -19,6 +19,10 @@ pub struct Function {
     pub parameters: Vec<String>,
     pub start_byte: usize,
     pub end_byte: usize,
+    pub return_type: Option<crate::data::Type>,
+    pub doc_comment: Option<String>,
+    pub body_start_byte: Option<usize>,
+    pub body_end_byte: Option<usize>,
 }
 
 /// Scope information
@@ -68,13 +72,28 @@ impl ScopeAnalyzer {
             }
             "function_declaration" => {
                 self.handle_function_declaration(node, current_scope, source);
+                // Continue analyzing children to handle function_body
+                self.analyze_children(node, current_scope, source);
             }
             "for_loop" => {
                 // For loops create new scope
                 let loop_scope = self.create_scope(current_scope, node.start_byte(), node.end_byte());
                 self.handle_for_loop(node, loop_scope, source);
             }
-            "function_body" | "block" => {
+            "function_body" => {
+                // Function body creates new scope and inherits parameters
+                let block_scope = self.create_scope(current_scope, node.start_byte(), node.end_byte());
+                
+                // Add function parameters to the function body scope
+                if let Some(parent) = node.parent() {
+                    if parent.kind() == "function_declaration" {
+                        self.add_function_parameters_to_scope(parent, block_scope, source);
+                    }
+                }
+                
+                self.analyze_children(node, block_scope, source);
+            }
+            "block" => {
                 // Blocks create new scopes
                 let block_scope = self.create_scope(current_scope, node.start_byte(), node.end_byte());
                 self.analyze_children(node, block_scope, source);
@@ -130,8 +149,10 @@ impl ScopeAnalyzer {
             let name = name_node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
             
             let mut parameters = Vec::new();
+            let mut body_start_byte = None;
+            let mut body_end_byte = None;
             
-            // Find parameter_list node
+            // Find parameter_list node and function_body
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "parameter_list" {
@@ -144,18 +165,61 @@ impl ScopeAnalyzer {
                             }
                         }
                     }
-                    break;
+                } else if child.kind() == "function_body" {
+                    body_start_byte = Some(child.start_byte());
+                    body_end_byte = Some(child.end_byte());
                 }
             }
+
+            // Extract doc comment from preceding comment
+            let doc_comment = Self::extract_doc_comment(node, source);
 
             let function = Function {
                 name: name.clone(),
                 parameters,
                 start_byte: node.start_byte(),
                 end_byte: node.end_byte(),
+                return_type: None, // Will be inferred later if needed
+                doc_comment,
+                body_start_byte,
+                body_end_byte,
             };
 
             self.functions.insert(name, function);
+        }
+    }
+
+    fn extract_doc_comment(node: Node, source: &str) -> Option<String> {
+        // Look for comment nodes before the function declaration
+        let mut current = node.prev_sibling()?;
+        let mut comments = Vec::new();
+        
+        // Collect consecutive comment lines before the function
+        loop {
+            if current.kind() == "comment" {
+                if let Ok(text) = current.utf8_text(source.as_bytes()) {
+                    // Remove "//" prefix and trim
+                    let comment_text = text.strip_prefix("//").unwrap_or(text).trim();
+                    comments.push(comment_text.to_string());
+                }
+                
+                // Check if there's another comment above
+                if let Some(prev) = current.prev_sibling() {
+                    current = prev;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        
+        if comments.is_empty() {
+            None
+        } else {
+            // Reverse because we collected from bottom to top
+            comments.reverse();
+            Some(comments.join("\n"))
         }
     }
 
@@ -182,6 +246,34 @@ impl ScopeAnalyzer {
 
         // Analyze loop body
         self.analyze_children(node, scope_id, source);
+    }
+
+    fn add_function_parameters_to_scope(&mut self, func_node: Node, scope_id: usize, source: &str) {
+        // Find parameter_list in the function declaration
+        let mut cursor = func_node.walk();
+        for child in func_node.children(&mut cursor) {
+            if child.kind() == "parameter_list" {
+                // Extract each parameter identifier
+                let mut param_cursor = child.walk();
+                for param in child.children(&mut param_cursor) {
+                    if param.kind() == "identifier" {
+                        if let Ok(param_name) = param.utf8_text(source.as_bytes()) {
+                            let variable = Variable {
+                                name: param_name.to_string(),
+                                start_byte: param.start_byte(),
+                                end_byte: param.end_byte(),
+                                scope_id,
+                            };
+
+                            if let Some(scope) = self.scopes.get_mut(scope_id) {
+                                scope.variables.insert(param_name.to_string(), variable);
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+        }
     }
 
     /// Find all variables visible at a given byte position
@@ -253,5 +345,66 @@ mod tests {
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].name, "test");
         assert_eq!(functions[0].parameters.len(), 2);
+    }
+
+    #[test]
+    fn test_function_parameters_in_scope() {
+        let source = "func add(a, b)\n  return a + b";
+        let tree = stonescript_parser::parse(source).unwrap();
+        
+        // Print AST structure
+        println!("\n=== AST Structure ===");
+        print_ast(&tree.root_node(), source, 0);
+        
+        let mut analyzer = ScopeAnalyzer::new();
+        analyzer.analyze(&tree, source);
+        
+        // Print scopes
+        println!("\n=== Scopes ===");
+        for scope in &analyzer.scopes {
+            println!("Scope {}: bytes {}..{}, parent: {:?}, vars: {:?}", 
+                scope.id, scope.start_byte, scope.end_byte, scope.parent,
+                scope.variables.keys().collect::<Vec<_>>());
+        }
+        
+        // Find the position of 'a' in 'return a + b' (around byte 24)
+        let a_position = source.find("return a").unwrap() + 7; // position of 'a'
+        let b_position = source.find("+ b").unwrap() + 2; // position of 'b'
+        
+        println!("\nLooking for variables at position {} (should be 'a')", a_position);
+        println!("Looking for variables at position {} (should be 'b')", b_position);
+        
+        // Check that 'a' is visible at its usage position
+        let vars_at_a = analyzer.find_variables_at(a_position);
+        println!("Variables at position {}: {:?}", a_position, vars_at_a.iter().map(|v| &v.name).collect::<Vec<_>>());
+        assert!(vars_at_a.iter().any(|v| v.name == "a"), "Parameter 'a' should be visible in function body");
+        
+        // Check that 'b' is visible at its usage position
+        let vars_at_b = analyzer.find_variables_at(b_position);
+        println!("Variables at position {}: {:?}", b_position, vars_at_b.iter().map(|v| &v.name).collect::<Vec<_>>());
+        assert!(vars_at_b.iter().any(|v| v.name == "b"), "Parameter 'b' should be visible in function body");
+    }
+}
+
+fn print_ast(node: &tree_sitter::Node, source: &str, depth: usize) {
+    let indent = "  ".repeat(depth);
+    let text = node.utf8_text(source.as_bytes()).unwrap_or("<error>");
+    let text_preview = if text.len() > 30 {
+        format!("{}...", &text[..30].replace("\n", "\\n"))
+    } else {
+        text.replace("\n", "\\n")
+    };
+    
+    println!("{}{} [{}..{}] \"{}\"", 
+        indent, 
+        node.kind(), 
+        node.start_byte(),
+        node.end_byte(),
+        text_preview
+    );
+    
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        print_ast(&child, source, depth + 1);
     }
 }

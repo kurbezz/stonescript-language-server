@@ -1,16 +1,17 @@
 use stonescript_parser;
 
 fn main() {
-    let source = "func test(a, b)\n  return a + b";
+    let source = std::fs::read_to_string("../../test_scripts/Games/cColorTetris.txt")
+        .expect("Failed to read file");
     
-    println!("Parsing: {:?}", source);
+    println!("Parsing cColorTetris.txt");
     
-    let tree = stonescript_parser::parse(source).expect("Failed to parse");
+    let tree = stonescript_parser::parse(&source).expect("Failed to parse");
     let root = tree.root_node();
     
     println!("\n=== AST ===\n{}", root.to_sexp());
     println!("\n=== Pretty Print ===");
-    print_tree(&root, source, 0);
+    print_tree(&root, &source, 0);
 }
 
 fn print_tree(node: &tree_sitter::Node, source: &str, indent: usize) {

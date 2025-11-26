@@ -8,9 +8,30 @@ pub enum Type {
     String,
     Bool,
     Object(&'static str),
-    Array(&'static Type),  // Changed from Box to static reference
+    Array(&'static Type), // Changed from Box to static reference
     Function,
     Unknown,
+}
+
+impl Type {
+    pub fn is_numeric(&self) -> bool {
+        matches!(self, Type::Int | Type::Float)
+    }
+}
+
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::Int => write!(f, "Int"),
+            Type::Float => write!(f, "Float"),
+            Type::String => write!(f, "String"),
+            Type::Bool => write!(f, "Bool"),
+            Type::Object(name) => write!(f, "{}", name),
+            Type::Array(inner) => write!(f, "Array<{}>", inner),
+            Type::Function => write!(f, "Function"),
+            Type::Unknown => write!(f, "Unknown"),
+        }
+    }
 }
 
 /// Property of a game object
@@ -108,6 +129,14 @@ const FOE_PROPERTIES: &[Property] = &[
     },
 ];
 
+// Cooldown properties - note: actual properties are dynamic based on ability IDs
+// This is a placeholder to indicate cooldown is an object type
+const COOLDOWN_PROPERTIES: &[Property] = &[Property {
+    name: "ability_id",
+    typ: Type::Float,
+    description: "Cooldown time remaining for ability (use ability ID as property name)",
+}];
+
 /// All game state queries
 pub const GAME_STATE_QUERIES: &[GameStateQuery] = &[
     // Location
@@ -117,7 +146,6 @@ pub const GAME_STATE_QUERIES: &[GameStateQuery] = &[
         return_type: Type::Object("Location"),
         properties: Some(LOC_PROPERTIES),
     },
-    
     // Foe
     GameStateQuery {
         name: "foe",
@@ -125,7 +153,6 @@ pub const GAME_STATE_QUERIES: &[GameStateQuery] = &[
         return_type: Type::Object("Foe"),
         properties: Some(FOE_PROPERTIES),
     },
-    
     // Player stats
     GameStateQuery {
         name: "hp",
@@ -157,7 +184,6 @@ pub const GAME_STATE_QUERIES: &[GameStateQuery] = &[
         return_type: Type::String,
         properties: None,
     },
-    
     // Time
     GameStateQuery {
         name: "time",
@@ -171,7 +197,6 @@ pub const GAME_STATE_QUERIES: &[GameStateQuery] = &[
         return_type: Type::Float,
         properties: None,
     },
-    
     // Screen
     GameStateQuery {
         name: "screen",
@@ -190,7 +215,6 @@ pub const GAME_STATE_QUERIES: &[GameStateQuery] = &[
             },
         ]),
     },
-    
     // Input
     GameStateQuery {
         name: "input",
@@ -208,6 +232,31 @@ pub const GAME_STATE_QUERIES: &[GameStateQuery] = &[
                 description: "Mouse Y position",
             },
         ]),
+    },
+    // Cooldown
+    GameStateQuery {
+        name: "cooldown",
+        description: "Ability cooldowns",
+        return_type: Type::Object("Cooldown"),
+        properties: Some(COOLDOWN_PROPERTIES),
+    },
+    // Music
+    GameStateQuery {
+        name: "music",
+        description: "Currently playing music track ID",
+        return_type: Type::String,
+        properties: None,
+    },
+    // UI
+    GameStateQuery {
+        name: "ui",
+        description: "UI system and root panel",
+        return_type: Type::Object("UI"),
+        properties: Some(&[Property {
+            name: "root",
+            typ: Type::Object("Panel"),
+            description: "The base UI object on top of which the entire tree is built",
+        }]),
     },
 ];
 

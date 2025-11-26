@@ -1,8 +1,15 @@
 //! Completion provider
 
+use crate::data::abilities::ABILITY_IDS;
+use crate::data::filters::{FOE_FILTERS, ITEM_FILTERS};
 use crate::data::foes::FOES;
 use crate::data::locations::LOCATIONS;
-use crate::data::native_functions::{MATH_FUNCTIONS, STORAGE_FUNCTIONS, STRING_FUNCTIONS};
+use crate::data::music::MUSIC_TRACKS;
+use crate::data::native_functions::{
+    MATH_FUNCTIONS, MUSIC_FUNCTIONS, STORAGE_FUNCTIONS, STRING_FUNCTIONS, UI_FUNCTIONS,
+};
+use crate::data::sounds::SOUND_EFFECTS;
+use crate::data::ui::{UI_METHODS, UI_PROPERTIES};
 use crate::data::*;
 use crate::utils::ScopeAnalyzer;
 use regex;
@@ -17,12 +24,16 @@ pub enum CompletionContext {
     MemberAccess(String), // object name
     /// Inside function call
     FunctionCall,
+    /// Inside specific function call (namespace, function_name)
+    InsideFunctionCall(String, String),
     /// After keywords
     AfterKeyword(String),
     /// Variable/function reference
     Identifier,
     /// Binary expression with identifier (e.g., loc=, foe=)
     BinaryWithIdentifier(String),
+    /// After equip/equipL/equipR keywords (for item filters)
+    AfterEquip,
 }
 
 pub struct CompletionProvider {
@@ -52,9 +63,13 @@ impl CompletionProvider {
 
         let mut items = match context {
             CompletionContext::TopLevel => self.complete_top_level(scope),
-            CompletionContext::MemberAccess(object) => self.complete_member_access(&object),
+            CompletionContext::MemberAccess(object) => self.complete_member_access(&object, source),
             CompletionContext::AfterKeyword(keyword) => self.complete_after_keyword(&keyword),
+            CompletionContext::AfterEquip => self.complete_after_equip(),
             CompletionContext::FunctionCall => self.complete_function_call(scope),
+            CompletionContext::InsideFunctionCall(namespace, func) => {
+                self.complete_inside_function_call(&namespace, &func)
+            }
             CompletionContext::Identifier => self.complete_identifier(scope),
             CompletionContext::BinaryWithIdentifier(identifier) => {
                 self.complete_binary_identifier(&identifier, scope)
@@ -126,6 +141,25 @@ impl CompletionProvider {
                         return CompletionContext::MemberAccess(ident.as_str().to_string());
                     }
                 }
+
+                // Pattern 4: Check for keywords followed by space
+                // Matches: "play ", "activate ", "equip ", "equipL ", "equipR "
+                if let Some(caps) = regex::Regex::new(r"^\s*(play|activate)\s+\w*$")
+                    .ok()
+                    .and_then(|re| re.captures(text_before_cursor))
+                {
+                    if let Some(keyword) = caps.get(1) {
+                        return CompletionContext::AfterKeyword(keyword.as_str().to_string());
+                    }
+                }
+
+                // Pattern 5: Check for equip commands
+                if let Some(_caps) = regex::Regex::new(r"^\s*(equip|equipL|equipR)\s+")
+                    .ok()
+                    .and_then(|re| re.captures(text_before_cursor))
+                {
+                    return CompletionContext::AfterEquip;
+                }
             }
         }
 
@@ -133,7 +167,7 @@ impl CompletionProvider {
             .root_node()
             .named_descendant_for_point_range(point, point);
 
-        if let Some(mut current_node) = node {
+        if let Some(current_node) = node {
             // Check if we're after a dot
             if current_node.kind() == "." {
                 // Find the object before the dot
@@ -179,6 +213,22 @@ impl CompletionProvider {
 
                 // Check if we're in a call expression
                 if node.kind() == "call_expression" {
+                    // Try to determine the function being called
+                    if let Some(func_node) = node.child_by_field_name("function") {
+                        if func_node.kind() == "member_expression" {
+                            // namespace.function() call
+                            if let Some(obj) = func_node.child_by_field_name("object") {
+                                if let Some(prop) = func_node.child_by_field_name("property") {
+                                    let namespace = obj.utf8_text(source.as_bytes()).unwrap_or("");
+                                    let function = prop.utf8_text(source.as_bytes()).unwrap_or("");
+                                    return CompletionContext::InsideFunctionCall(
+                                        namespace.to_string(),
+                                        function.to_string(),
+                                    );
+                                }
+                            }
+                        }
+                    }
                     return CompletionContext::FunctionCall;
                 }
 
@@ -269,8 +319,20 @@ impl CompletionProvider {
         items
     }
 
-    fn complete_member_access(&self, object: &str) -> Vec<CompletionItem> {
+    fn complete_member_access(&self, object: &str, source: &str) -> Vec<CompletionItem> {
         let mut items = Vec::new();
+
+        // Helper to check if a variable is a UI component
+        let is_ui_component = |var_name: &str| -> bool {
+            let pattern = format!(
+                r"var\s+{}\s*=\s*ui\.(AddPanel|AddButton|AddText|AddAnim|root)",
+                regex::escape(var_name)
+            );
+            regex::Regex::new(&pattern)
+                .ok()
+                .and_then(|re| re.find(source))
+                .is_some()
+        };
 
         // Find game state object
         if let Some(query) = self.game_state.iter().find(|q| q.name == object) {
@@ -318,21 +380,161 @@ impl CompletionProvider {
                     });
                 }
             }
+            "music" => {
+                for func in MUSIC_FUNCTIONS {
+                    items.push(CompletionItem {
+                        label: func.name.to_string(),
+                        kind: Some(CompletionItemKind::FUNCTION),
+                        detail: Some(func.description.to_string()),
+                        ..Default::default()
+                    });
+                }
+            }
+            "ui" => {
+                for func in UI_FUNCTIONS {
+                    items.push(CompletionItem {
+                        label: func.name.to_string(),
+                        kind: Some(CompletionItemKind::FUNCTION),
+                        detail: Some(func.description.to_string()),
+                        ..Default::default()
+                    });
+                }
+            }
+            "cooldown" => {
+                // Add ability IDs for cooldown queries
+                for ability in ABILITY_IDS {
+                    items.push(CompletionItem {
+                        label: ability.to_string(),
+                        kind: Some(CompletionItemKind::PROPERTY),
+                        detail: Some(format!("Ability cooldown for {}", ability)),
+                        ..Default::default()
+                    });
+                }
+            }
+            _ => {
+                // Check if this is a UI component variable
+                if is_ui_component(object) {
+                    // Add UI properties
+                    for prop in UI_PROPERTIES {
+                        items.push(CompletionItem {
+                            label: prop.to_string(),
+                            kind: Some(CompletionItemKind::PROPERTY),
+                            detail: Some("UI property".to_string()),
+                            ..Default::default()
+                        });
+                    }
+                    // Add UI methods
+                    for method in UI_METHODS {
+                        items.push(CompletionItem {
+                            label: method.to_string(),
+                            kind: Some(CompletionItemKind::METHOD),
+                            detail: Some("UI method".to_string()),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        }
+
+        items
+    }
+
+    fn complete_after_keyword(&self, keyword: &str) -> Vec<CompletionItem> {
+        let mut items = Vec::new();
+
+        match keyword {
+            "play" => {
+                // Complete with sound effect IDs
+                for sound in SOUND_EFFECTS {
+                    items.push(CompletionItem {
+                        label: sound.to_string(),
+                        kind: Some(CompletionItemKind::CONSTANT),
+                        detail: Some(format!("Sound effect: {}", sound)),
+                        insert_text: Some(sound.to_string()),
+                        ..Default::default()
+                    });
+                }
+            }
+            "activate" => {
+                // Complete with ability IDs
+                for ability in ABILITY_IDS {
+                    items.push(CompletionItem {
+                        label: ability.to_string(),
+                        kind: Some(CompletionItemKind::CONSTANT),
+                        detail: Some(format!("Ability: {}", ability)),
+                        insert_text: Some(ability.to_string()),
+                        ..Default::default()
+                    });
+                }
+                // Also add special activations
+                items.push(CompletionItem {
+                    label: "R".to_string(),
+                    kind: Some(CompletionItemKind::CONSTANT),
+                    detail: Some("Activate right hand item".to_string()),
+                    ..Default::default()
+                });
+                items.push(CompletionItem {
+                    label: "L".to_string(),
+                    kind: Some(CompletionItemKind::CONSTANT),
+                    detail: Some("Activate left hand item".to_string()),
+                    ..Default::default()
+                });
+                items.push(CompletionItem {
+                    label: "potion".to_string(),
+                    kind: Some(CompletionItemKind::CONSTANT),
+                    detail: Some("Drink a potion".to_string()),
+                    ..Default::default()
+                });
+            }
             _ => {}
         }
 
         items
     }
 
-    fn complete_after_keyword(&self, _keyword: &str) -> Vec<CompletionItem> {
-        // Context-specific completion based on keyword
-        // For now, return empty
-        vec![]
+    fn complete_after_equip(&self) -> Vec<CompletionItem> {
+        let mut items = Vec::new();
+
+        // Add item filters
+        for filter in ITEM_FILTERS {
+            items.push(CompletionItem {
+                label: filter.to_string(),
+                kind: Some(CompletionItemKind::CONSTANT),
+                detail: Some(format!("Item filter: {}", filter)),
+                insert_text: Some(filter.to_string()),
+                ..Default::default()
+            });
+        }
+
+        items
     }
 
     fn complete_function_call(&self, scope: &ScopeAnalyzer) -> Vec<CompletionItem> {
         // Complete function names and variables
         self.complete_identifier(scope)
+    }
+
+    fn complete_inside_function_call(
+        &self,
+        namespace: &str,
+        function: &str,
+    ) -> Vec<CompletionItem> {
+        let mut items = Vec::new();
+
+        // Special handling for music.Play() - suggest music tracks
+        if namespace == "music" && function == "Play" {
+            for track in MUSIC_TRACKS {
+                items.push(CompletionItem {
+                    label: track.to_string(),
+                    kind: Some(CompletionItemKind::CONSTANT),
+                    detail: Some(format!("Music track: {}", track)),
+                    insert_text: Some(format!("\"{}\"", track)),
+                    ..Default::default()
+                });
+            }
+        }
+
+        items
     }
 
     fn complete_identifier(&self, scope: &ScopeAnalyzer) -> Vec<CompletionItem> {
@@ -385,7 +587,7 @@ impl CompletionProvider {
                 }
             }
             "foe" => {
-                // Complete with foe identifiers
+                // Complete with foe identifiers and filters
                 for foe in FOES {
                     items.push(CompletionItem {
                         label: foe.to_string(),
@@ -397,6 +599,32 @@ impl CompletionProvider {
                         insert_text: Some(foe.to_string()),
                         filter_text: Some(foe.to_string()),
                         sort_text: Some(format!("00_{}", foe)),
+                        ..Default::default()
+                    });
+                }
+                // Add foe filters
+                for filter in FOE_FILTERS {
+                    items.push(CompletionItem {
+                        label: filter.to_string(),
+                        kind: Some(CompletionItemKind::CONSTANT),
+                        detail: Some(format!("Foe filter: {}", filter)),
+                        insert_text: Some(filter.to_string()),
+                        filter_text: Some(filter.to_string()),
+                        sort_text: Some(format!("01_{}", filter)),
+                        ..Default::default()
+                    });
+                }
+            }
+            "item" => {
+                // Complete with item filters
+                for filter in ITEM_FILTERS {
+                    items.push(CompletionItem {
+                        label: filter.to_string(),
+                        kind: Some(CompletionItemKind::CONSTANT),
+                        detail: Some(format!("Item filter: {}", filter)),
+                        insert_text: Some(filter.to_string()),
+                        filter_text: Some(filter.to_string()),
+                        sort_text: Some(format!("00_{}", filter)),
                         ..Default::default()
                     });
                 }
@@ -437,6 +665,9 @@ impl CompletionProvider {
             }
             if line_text.contains("foe") && line_text.contains("=") {
                 return self.complete_binary_identifier("foe", scope);
+            }
+            if line_text.contains("item") && line_text.contains("=") {
+                return self.complete_binary_identifier("item", scope);
             }
         }
 

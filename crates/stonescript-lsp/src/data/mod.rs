@@ -19,7 +19,8 @@ pub use keywords::{get_keyword, KeywordCategory, KeywordInfo, KEYWORDS};
 pub use locations::{get_location_name, LOCATIONS, LOCATION_NAMES};
 pub use music::MUSIC_TRACKS;
 pub use native_functions::{
-    get_function, get_functions_in_namespace, FunctionSignature, Parameter,
+    get_function, get_functions_in_namespace, FunctionSignature, Parameter, MATH_FUNCTIONS,
+    MUSIC_FUNCTIONS, STORAGE_FUNCTIONS, STRING_FUNCTIONS, UI_FUNCTIONS,
 };
 pub use sounds::SOUND_EFFECTS;
 pub use ui::{UI_COMPONENTS, UI_METHODS, UI_PROPERTIES};
