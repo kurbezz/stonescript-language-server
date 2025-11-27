@@ -96,6 +96,14 @@ impl ScopeAnalyzer {
             "block" => {
                 // Blocks create new scopes
                 let block_scope = self.create_scope(current_scope, node.start_byte(), node.end_byte());
+                
+                // Check if this block is a function body
+                if let Some(parent) = node.parent() {
+                    if parent.kind() == "function_declaration" {
+                        self.add_function_parameters_to_scope(parent, block_scope, source);
+                    }
+                }
+
                 self.analyze_children(node, block_scope, source);
             }
             _ => {
@@ -165,7 +173,7 @@ impl ScopeAnalyzer {
                             }
                         }
                     }
-                } else if child.kind() == "function_body" {
+                } else if child.kind() == "function_body" || child.kind() == "block" {
                     body_start_byte = Some(child.start_byte());
                     body_end_byte = Some(child.end_byte());
                 }

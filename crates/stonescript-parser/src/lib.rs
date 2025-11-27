@@ -25,6 +25,8 @@ pub fn parser() -> Parser {
 /// Parse StoneScript source code
 pub fn parse(source: &str) -> Option<Tree> {
     let mut parser = parser();
+    // Strip UTF-8 BOM if present
+    let source = source.strip_prefix('\u{FEFF}').unwrap_or(source);
     parser.parse(source, None)
 }
 

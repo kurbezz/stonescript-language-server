@@ -230,7 +230,7 @@ impl DiagnosticsProvider {
                     }
 
                     // Check if it's a known command (print, etc.)
-                    if ["print"].contains(&text) {
+                    if ["print", "equip", "equipL", "equipR", "activate", "loadout", "brew", "play", "disable", "enable"].contains(&text) {
                         return;
                     }
 
