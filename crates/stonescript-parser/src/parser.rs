@@ -4,7 +4,7 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, take_until, take_while, take_while1, take_while_m_n},
     character::complete::{alpha1, alphanumeric1, anychar, char, digit1, line_ending, multispace0},
-    combinator::{map, opt, peek, recognize, value, verify},
+    combinator::{map, not, opt, peek, recognize, value, verify},
     multi::{many0, many1, separated_list0, separated_list1},
     sequence::{delimited, pair, preceded, terminated, tuple},
     IResult,
@@ -38,7 +38,7 @@ impl<'a> ParseContext<'a> {
 
     /// Get current offset
     fn offset(&self, remaining: &str) -> usize {
-        self.source.len() - remaining.len()
+        remaining.as_ptr() as usize - self.source.as_ptr() as usize
     }
 }
 
@@ -55,6 +55,11 @@ fn ws0(input: &str) -> IResult<&str, &str> {
 /// Parse required whitespace
 fn ws1(input: &str) -> IResult<&str, &str> {
     take_while1(|c| c == ' ' || c == '\t')(input)
+}
+
+/// Parse optional whitespace including newlines (multispace)
+fn ws_multi(input: &str) -> IResult<&str, &str> {
+    take_while(|c: char| c.is_whitespace())(input)
 }
 
 /// Parse a line comment starting with //
@@ -85,6 +90,64 @@ fn identifier(input: &str) -> IResult<&str, String> {
         )),
         |s: &str| s.to_string(),
     )(input)
+}
+
+/// Parse a bare string (unquoted string that may contain Unicode)
+/// Used for assignments like: var MAX_SOLID_BAR = ██████████████
+fn bare_string<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Expression> {
+    let start = ctx.offset(input);
+
+    // Capture everything until whitespace or newline
+    // For bare Unicode strings, we want to capture the whole sequence
+    let mut end_pos = 0;
+    let chars: Vec<char> = input.chars().collect();
+
+    // First, check if this looks like it should NOT be a bare string
+    // by checking the first character
+    if chars.is_empty() {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )));
+    }
+
+    let first_char = chars[0];
+
+    // Don't capture if it starts with ASCII alphanumeric or underscore
+    // (should be identifier) or if it starts with a digit (should be number)
+    if first_char.is_ascii_alphanumeric() || first_char == '_' {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )));
+    }
+
+    // Capture until whitespace or newline for Unicode strings
+    while end_pos < chars.len() {
+        let ch = chars[end_pos];
+        if ch.is_whitespace() || ch == '\r' || ch == '\n' {
+            break;
+        }
+        end_pos += 1;
+    }
+
+    if end_pos == 0 {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )));
+    }
+
+    // Convert character count to byte offset
+    let byte_offset: usize = chars.iter().take(end_pos).map(|c| c.len_utf8()).sum();
+    let content = &input[..byte_offset];
+    let remaining = &input[byte_offset..];
+
+    let end = ctx.offset(remaining);
+    Ok((
+        remaining,
+        Expression::String(content.to_string(), ctx.make_span(start, end)),
+    ))
 }
 
 /// Parse a path string (for new/import): Games/Fishing/FishingGame
@@ -170,7 +233,10 @@ fn binary_operator(input: &str) -> IResult<&str, BinaryOperator> {
         value(BinaryOperator::Add, char('+')),
         value(BinaryOperator::Subtract, char('-')),
         value(BinaryOperator::Multiply, char('*')),
-        value(BinaryOperator::Divide, char('/')),
+        value(
+            BinaryOperator::Divide,
+            terminated(char('/'), not(char('/'))),
+        ),
         value(BinaryOperator::Modulo, char('%')),
     ))(input)
 }
@@ -247,6 +313,28 @@ fn lvalue_expression<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a 
     Ok((input, expr))
 }
 
+/// Parse boolean literal (true or false)
+fn boolean_literal<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Expression> {
+    let start = ctx.offset(input);
+
+    // Try "true"
+    if let Ok((rest, _)) = tag::<_, _, nom::error::Error<&str>>("true")(input) {
+        let end = ctx.offset(rest);
+        return Ok((rest, Expression::Boolean(true, ctx.make_span(start, end))));
+    }
+
+    // Try "false"
+    if let Ok((rest, _)) = tag::<_, _, nom::error::Error<&str>>("false")(input) {
+        let end = ctx.offset(rest);
+        return Ok((rest, Expression::Boolean(false, ctx.make_span(start, end))));
+    }
+
+    Err(nom::Err::Error(nom::error::Error::new(
+        input,
+        nom::error::ErrorKind::Tag,
+    )))
+}
+
 /// Parse property access (e.g., loc.stars, foe.hp)
 /// Parse a base expression (identifier, number, or parenthesized expression)
 fn base_expression<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Expression> {
@@ -256,6 +344,8 @@ fn base_expression<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a st
         |i| ascii_block(i, ctx),
         |i| array_literal(i, ctx),
         |i| new_expression(i, ctx),
+        |i| boolean_literal(i, ctx),
+        |i| interpolated_expression(i, ctx),
         |i| {
             let start = ctx.offset(i);
             let (i, id) = identifier(i)?;
@@ -272,7 +362,17 @@ fn base_expression<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a st
             let (i, _) = char(')')(i)?;
             Ok((i, expr))
         },
+        // Bare string as fallback (for Unicode strings like ████████)
+        |i| bare_string(i, ctx),
     ))(input)
+}
+
+/// Parse interpolated expression (@expr@)
+fn interpolated_expression<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Expression> {
+    let (input, _) = char('@')(input)?;
+    let (input, expr) = expression(input, ctx)?;
+    let (input, _) = char('@')(input)?;
+    Ok((input, expr))
 }
 
 /// Parse postfix operations (property access, index access, function calls)
@@ -299,9 +399,9 @@ fn postfix_expression<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a
 
         // Try index access ([index])
         if let Ok((next_input, _)) = char::<_, nom::error::Error<&str>>('[')(input) {
-            if let Ok((next_input, _)) = ws0(next_input) {
+            if let Ok((next_input, _)) = ws_multi(next_input) {
                 if let Ok((next_input, index_expr)) = expression(next_input, ctx) {
-                    if let Ok((next_input, _)) = ws0(next_input) {
+                    if let Ok((next_input, _)) = ws_multi(next_input) {
                         if let Ok((next_input, _)) =
                             char::<_, nom::error::Error<&str>>(']')(next_input)
                         {
@@ -321,13 +421,13 @@ fn postfix_expression<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a
 
         // Try function call (arguments)
         if let Ok((next_input, _)) = char::<_, nom::error::Error<&str>>('(')(input) {
-            if let Ok((next_input, _)) = ws0(next_input) {
-                if let Ok((next_input, args)) = separated_list0(
-                    delimited(ws0, char(','), ws0),
-                    |i| expression(i, ctx),
-                )(next_input)
+            if let Ok((next_input, _)) = ws_multi(next_input) {
+                if let Ok((next_input, args)) =
+                    separated_list0(delimited(ws_multi, char(','), ws_multi), |i| {
+                        expression(i, ctx)
+                    })(next_input)
                 {
-                    if let Ok((next_input, _)) = ws0(next_input) {
+                    if let Ok((next_input, _)) = ws_multi(next_input) {
                         if let Ok((next_input, _)) =
                             char::<_, nom::error::Error<&str>>(')')(next_input)
                         {
@@ -414,7 +514,7 @@ fn quoted_string<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str,
                     content.push(next_char);
                 }
             }
-            remaining = &remaining[2..];
+            remaining = &remaining[1 + next_char.len_utf8()..];
         } else {
             let ch = remaining.chars().next().unwrap();
             content.push(ch);
@@ -424,11 +524,50 @@ fn quoted_string<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str,
 }
 
 /// Parse ascii block (multiline string)
+/// Supports both regular and fullwidth brackets: ascii...asciiend or ［ascii...asciiend］
 fn ascii_block<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Expression> {
     let start = ctx.offset(input);
+
+    // Check for fullwidth opening bracket ［ followed by "ascii"
+    // We need to peek ahead to avoid consuming the bracket if it's not an ascii block
+    let has_fullwidth_open = if input.starts_with('［') {
+        let after_bracket = &input['［'.len_utf8()..];
+        after_bracket.starts_with("ascii")
+    } else {
+        false
+    };
+    
+    let input = if has_fullwidth_open {
+        &input['［'.len_utf8()..]
+    } else {
+        input
+    };
+
     let (input, _) = tag("ascii")(input)?;
+    // Allow optional line ending after 'ascii' keyword (for output statements like '...,ascii\ncontent\nasciiend')
+    let (input, _) = opt(line_ending)(input)?;
     let (input, content) = take_until("asciiend")(input)?;
     let (input, _) = tag("asciiend")(input)?;
+
+    // If we had a fullwidth opening bracket, we MUST have a closing bracket
+    // Otherwise, the closing bracket is optional (for backwards compatibility)
+    let input = if has_fullwidth_open {
+        if input.starts_with('］') {
+            &input['］'.len_utf8()..]
+        } else {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Char,
+            )));
+        }
+    } else {
+        // No opening bracket, so closing bracket is optional
+        if input.starts_with('］') {
+            &input['］'.len_utf8()..]
+        } else {
+            input
+        }
+    };
 
     let end = ctx.offset(input);
     Ok((
@@ -464,23 +603,49 @@ fn color_literal<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str,
 }
 
 /// Parse array literal (e.g., [], [1, 2, 3])
+/// Supports both regular and fullwidth brackets: [...] or ［...］
 fn array_literal<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Expression> {
     let start = ctx.offset(input);
-    let (input, _) = char('[')(input)?;
-    let (input, _) = ws0(input)?;
+
+    // Check for fullwidth opening bracket ［ or regular [
+    let has_fullwidth_open = input.starts_with('［');
+    let input = if has_fullwidth_open {
+        &input['［'.len_utf8()..]
+    } else if input.starts_with('[') {
+        &input[1..]
+    } else {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Char,
+        )));
+    };
+
+    let (input, _) = ws_multi(input)?;
 
     let (input, elements) = separated_list0(
         |i| {
-            let (i, _) = ws0(i)?;
+            let (i, _) = ws_multi(i)?;
             let (i, _) = char(',')(i)?;
-            let (i, _) = ws0(i)?;
+            let (i, _) = ws_multi(i)?;
             Ok((i, ()))
         },
         |i| expression(i, ctx),
     )(input)?;
 
-    let (input, _) = ws0(input)?;
-    let (input, _) = char(']')(input)?;
+    let (input, _) = ws_multi(input)?;
+
+    // Check for fullwidth closing bracket ］ or regular ]
+    let input = if input.starts_with('］') {
+        &input['］'.len_utf8()..]
+    } else if input.starts_with(']') {
+        &input[1..]
+    } else {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Char,
+        )));
+    };
+
     let end = ctx.offset(input);
 
     Ok((
@@ -507,7 +672,10 @@ fn unary_expression<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a s
                 value(UnaryOperator::Not, char('!')),
                 value(UnaryOperator::Negate, char('-')),
             ))(i)?;
-            let (i, expr) = primary_expression(i, ctx)?;
+            // Allow whitespace after unary operator
+            let (i, _) = ws0(i)?;
+            // Parse another unary expression to support !! and other combinations
+            let (i, expr) = unary_expression(i, ctx)?;
             let end = ctx.offset(i);
             Ok((
                 i,
@@ -589,8 +757,8 @@ fn interpolated_string<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'
     loop {
         if remaining.is_empty() || remaining.starts_with('\n') || remaining.starts_with('\r') {
             if !current_text.is_empty() {
-                let text_start = ctx.offset(input) - current_text.len();
                 let text_end = ctx.offset(remaining);
+                let text_start = text_end - current_text.len();
                 parts.push(InterpolationPart::Text(
                     current_text,
                     ctx.make_span(text_start, text_end),
@@ -602,8 +770,8 @@ fn interpolated_string<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'
         if remaining.starts_with('@') {
             // Save accumulated text
             if !current_text.is_empty() {
-                let text_start = start;
                 let text_end = ctx.offset(remaining);
+                let text_start = text_end - current_text.len();
                 parts.push(InterpolationPart::Text(
                     current_text.clone(),
                     ctx.make_span(text_start, text_end),
@@ -650,27 +818,48 @@ fn interpolated_string<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'
 fn output_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Statement> {
     let start = ctx.offset(input);
     let (input, _) = char('>')(input)?;
+    // Optional 'o' prefix (e.g. >o x,y,ascii)
+    let (input, _) = opt(char('o'))(input)?;
     let (input, _) = ws0(input)?;
 
-    // Try to parse position (`x,y,)
-    let (input, position) = opt(delimited(
-        char('`'),
-        separated_list1(char(','), |i| simple_expression(i, ctx)),
-        char(','),
-    ))(input)?;
-
-    let (input, _) = ws0(input)?;
-
-    // Parse the rest as interpolated string
-    let (input, text) = interpolated_string(input, ctx)?;
-
-    let position = position.and_then(|pos| {
-        if pos.len() >= 2 {
-            Some((pos[0].clone(), pos[1].clone()))
+    // Unified position parsing:
+    // Supports:
+    // >x,y,ascii
+    // >`x,y,ascii
+    // >x,y,color,ascii
+    // >`x,y,color,ascii
+    // >`x,y,text
+    
+    let (input, position) = opt(|input| {
+        // Optional backtick
+        let (input, _) = opt(char('`'))(input)?;
+        
+        // Parse x
+        let (input, x) = expression(input, ctx)?;
+        let (input, _) = tuple((ws0, char(','), ws0))(input)?;
+        
+        // Parse y
+        let (input, y) = expression(input, ctx)?;
+        let (input, _) = tuple((ws0, char(','), ws0))(input)?;
+        
+        // Check for optional color
+        let peek = input.trim_start();
+        let (input, _) = if peek.starts_with('#') || peek.starts_with('@') {
+            // Parse color
+            let (input, _) = expression(input, ctx)?;
+            let (input, _) = tuple((ws0, char(','), ws0))(input)?;
+            (input, ())
         } else {
-            None
-        }
-    });
+            (input, ())
+        };
+        
+        Ok((input, (x, y)))
+    })(input)?;
+
+    let (input, _) = ws0(input)?;
+
+    // Try to parse ASCII block first, then fall back to interpolated string
+    let (input, text) = alt((|i| ascii_block(i, ctx), |i| interpolated_string(i, ctx)))(input)?;
 
     let end = ctx.offset(input);
     Ok((
@@ -684,7 +873,7 @@ fn output_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a s
 }
 
 /// Parse variable declaration or assignment
-fn var_assignment<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Statement> {
+fn var_assignment<'a>(input: &'a str, ctx: &'a ParseContext<'a>) -> IResult<&'a str, Statement> {
     let start = ctx.offset(input);
     let (input, _) = tag("var")(input)?;
     let (input, _) = ws1(input)?;
@@ -694,7 +883,7 @@ fn var_assignment<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str
     // Check if we have an assignment
     if let Ok((next_input, _)) = char::<_, nom::error::Error<&str>>('=')(input) {
         // We have an equals sign, so we MUST parse an expression
-        let (input, _) = ws0(next_input)?;
+        let (input, _) = ws_multi(next_input)?;
         match expression(input, ctx) {
             Ok((input, value)) => {
                 let end = ctx.offset(input);
@@ -739,10 +928,10 @@ fn assignment_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&
         Expression::Identifier(_, _)
         | Expression::Property { .. }
         | Expression::IndexAccess { .. } => {
-            // Valid lvalue
+            // Valid lvalue, continue
         }
         _ => {
-            // If it's not a valid lvalue, fail the parse
+            // Invalid lvalue
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Tag,
@@ -752,7 +941,7 @@ fn assignment_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&
 
     let (input, _) = ws0(input)?;
     let (input, op) = assignment_operator(input)?;
-    let (input, _) = ws0(input)?;
+    let (input, _) = ws_multi(input)?;
     let (input, value) = expression(input, ctx)?;
 
     let end = ctx.offset(input);
@@ -771,9 +960,8 @@ fn assignment_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&
 fn return_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Statement> {
     let start = ctx.offset(input);
     let (input, _) = tag("return")(input)?;
-    let (input, _) = ws0(input)?; // Optional space? usually required if value follows
 
-    // Try to parse return value
+    // Try to parse return value (requires whitespace before value if present)
     let (input, value) = opt(preceded(ws1, |i| expression(i, ctx)))(input)?;
 
     let end = ctx.offset(input);
@@ -786,43 +974,70 @@ fn return_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a s
     ))
 }
 
-/// Parse for loop: for i = start..end
-fn for_loop<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Statement> {
+/// Parse for loop: for i = start..end OR for e : collection
+fn for_loop<'a>(input: &'a str, ctx: &'a ParseContext<'a>) -> IResult<&'a str, Statement> {
     let start = ctx.offset(input);
     let (input, _) = tag("for")(input)?;
     let (input, _) = ws1(input)?;
     let (input, variable) = identifier(input)?;
     let (input, _) = ws0(input)?;
-    let (input, _) = char('=')(input)?;
+
+    // Check if it's a range-based loop (=) or collection-based loop (:)
+    let (input, separator) = alt((char('='), char(':')))(input)?;
     let (input, _) = ws0(input)?;
 
-    // Parse start expression
-    let (input, start_expr) = expression(input, ctx)?;
-    let (input, _) = ws0(input)?;
-    let (input, _) = tag("..")(input)?;
-    let (input, _) = ws0(input)?;
-    // Parse end expression
-    let (input, end_expr) = expression(input, ctx)?;
+    if separator == '=' {
+        // Range-based for loop: for i = start..end
+        // Parse start expression
+        let (input, start_expr) = expression(input, ctx)?;
+        let (input, _) = ws0(input)?;
+        let (input, _) = tag("..")(input)?;
+        let (input, _) = ws0(input)?;
+        // Parse end expression
+        let (input, end_expr) = expression(input, ctx)?;
 
-    let (input, _) = opt(line_ending)(input)?;
+        let (input, _) = opt(line_ending)(input)?;
 
-    // Parse body
-    let (input, body) = indented_block(input, ctx)?;
+        // Parse body
+        let (input, body) = indented_block(input, ctx)?;
 
-    let end = ctx.offset(input);
-    Ok((
-        input,
-        Statement::For {
-            variable,
-            range: (start_expr, end_expr),
-            body,
-            span: ctx.make_span(start, end),
-        },
-    ))
+        let end = ctx.offset(input);
+        Ok((
+            input,
+            Statement::For {
+                variable,
+                range: (start_expr, end_expr),
+                body,
+                span: ctx.make_span(start, end),
+            },
+        ))
+    } else {
+        // Collection-based for loop: for e : collection
+        let (input, collection) = expression(input, ctx)?;
+
+        let (input, _) = opt(line_ending)(input)?;
+
+        // Parse body
+        let (input, body) = indented_block(input, ctx)?;
+
+        let end = ctx.offset(input);
+        Ok((
+            input,
+            Statement::ForIn {
+                variable,
+                collection,
+                body,
+                span: ctx.make_span(start, end),
+            },
+        ))
+    }
 }
 
 /// Parse function definition: func Name(arg1, arg2)
-fn function_definition<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Statement> {
+fn function_definition<'a>(
+    input: &'a str,
+    ctx: &'a ParseContext<'a>,
+) -> IResult<&'a str, Statement> {
     let start = ctx.offset(input);
     let (input, _) = tag("func")(input)?;
     let (input, _) = ws1(input)?;
@@ -886,7 +1101,7 @@ fn command_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a 
 }
 
 /// Parse a single line statement (without indentation handling)
-fn single_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Statement> {
+fn single_statement<'a>(input: &'a str, ctx: &'a ParseContext<'a>) -> IResult<&'a str, Statement> {
     preceded(
         ws0,
         alt((
@@ -896,9 +1111,9 @@ fn single_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a s
             |i| output_statement(i, ctx),
             map(line_ending, |_| Statement::Empty),
             // Try var assignment first (var x = value)
-            verify(|i| var_assignment(i, ctx), |_| true),
+            |i| var_assignment(i, ctx),
             // Try regular assignment
-            verify(|i| assignment_statement(i, ctx), |_| true),
+            |i| assignment_statement(i, ctx),
             |i| command_statement(i, ctx),
             // Try expression statement last (e.g., function calls)
             |i| expression_statement(i, ctx),
@@ -907,7 +1122,10 @@ fn single_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a s
 }
 
 /// Parse indented block of statements
-fn indented_block<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Vec<Statement>> {
+fn indented_block<'a>(
+    input: &'a str,
+    ctx: &'a ParseContext<'a>,
+) -> IResult<&'a str, Vec<Statement>> {
     let mut statements = Vec::new();
     let mut remaining = input;
     let mut base_indent: Option<usize> = None;
@@ -954,9 +1172,14 @@ fn indented_block<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str
             || after_spaces.starts_with('\r')
         {
             // Empty line, skip it
-            let (next, _) = line_ending(remaining)?;
-            remaining = next;
-            continue;
+            if let Ok((next, _)) = line_ending::<_, nom::error::Error<&str>>(remaining) {
+                remaining = next;
+                continue;
+            } else {
+                // EOF with spaces (or just EOF)
+                // We are done with the block.
+                break;
+            }
         }
 
         // Set base indentation from first non-empty line
@@ -974,21 +1197,33 @@ fn indented_block<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str
                 // Return to the start of this line (before indentation)
                 return Ok((line_start, statements));
             }
-
-            // If at base level and line starts with : or :?, this is an else clause
-            // Return to let the parent condition_statement handle it
-            if current_indent == base
-                && (after_spaces.starts_with(":?") || after_spaces.starts_with(':'))
-            {
-                return Ok((line_start, statements));
-            }
         }
 
         // Try to parse a statement
         match statement(after_spaces, ctx) {
             Ok((next, stmt)) => {
+                let is_block = matches!(
+                    stmt,
+                    Statement::FunctionDefinition { .. }
+                        | Statement::For { .. }
+                        | Statement::ForIn { .. }
+                        | Statement::Condition { .. }
+                );
+
                 statements.push(stmt);
-                remaining = next;
+
+                let mut current_input = next;
+                if !is_block {
+                    // Consume trailing comment and line ending
+                    // This is needed because some statements (like assignment) don't consume the newline
+                    // and we need to be ready for the next line in the block
+                    let (n, _) = trailing_comment(current_input).unwrap_or((current_input, ()));
+                    let (n, _) =
+                        opt(line_ending::<_, nom::error::Error<&str>>)(n).unwrap_or((n, None));
+                    current_input = n;
+                }
+
+                remaining = current_input;
             }
             Err(_e) => {
                 // If we can't parse a statement, return to line start
@@ -1001,8 +1236,36 @@ fn indented_block<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str
 }
 
 /// Parse conditional statement with indented block
-fn condition_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Statement> {
+fn condition_statement<'a>(
+    input: &'a str,
+    ctx: &'a ParseContext<'a>,
+) -> IResult<&'a str, Statement> {
     let start = ctx.offset(input);
+
+    // Calculate the indentation of this condition by looking backwards to find line start
+    let condition_indent = {
+        let offset_before_question = ctx.offset(input);
+        let text_before = &ctx.source[..offset_before_question];
+
+        // Find the last newline before the '?'
+        if let Some(last_newline_pos) = text_before.rfind(|c| c == '\n' || c == '\r') {
+            // Count spaces/tabs between the newline and the '?'
+            let line_start = last_newline_pos + 1;
+            let between = &ctx.source[line_start..offset_before_question];
+            between
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .count()
+        } else {
+            // No previous newline, so we're at the start of the file
+            // Count spaces/tabs from the beginning
+            text_before
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .count()
+        }
+    };
+
     let (input, _) = char('?')(input)?;
     let (input, _) = ws0(input)?;
     let (input, condition) = expression(input, ctx)?;
@@ -1014,13 +1277,17 @@ fn condition_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'
     // Parse else-if branches
     let (input, else_ifs) = many0(|i| {
         let start = ctx.offset(i);
+        eprintln!("[else-if] Trying to parse else-if at offset {}", start);
         let (i, _) = opt(line_ending)(i)?;
         let (i, _) = ws0(i)?;
         let (i, _) = tag(":?")(i)?;
+        eprintln!("[else-if] Found :? at offset {}", ctx.offset(i));
         let (i, _) = ws0(i)?;
         let (i, cond) = expression(i, ctx)?;
+        eprintln!("[else-if] Parsed condition");
         let (i, _) = opt(line_ending)(i)?;
         let (i, block) = indented_block(i, ctx)?;
+        eprintln!("[else-if] Parsed block");
         let end = ctx.offset(i);
         Ok((
             i,
@@ -1033,21 +1300,69 @@ fn condition_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'
     })(input)?;
 
     // Parse else block
-    let (input, else_block) = opt(map(
-        tuple((
-            opt(line_ending),
-            ws0,
-            char(':'),
-            verify(peek(opt(anychar)), |c: &Option<char>| *c != Some('?')),
-            opt(line_ending),
-            |i| indented_block(i, ctx),
-        )),
-        |(_, _, _, _, _, block)| block,
-    ))(input)?;
+    // After parsing then_block, we might have line endings and indentation before ':'
+    // IMPORTANT: Only consume ':' if it's at the same indentation level as the original '?'
+    let (final_input, else_block) = {
+        // Try to parse else block
+        // Skip any line endings
+        // Skip any line endings
+        let maybe_after_newlines = many0(line_ending::<_, nom::error::Error<&str>>)(input);
+        if let Ok((i, _)) = maybe_after_newlines {
+            // Count the indentation before ':'
+            let colon_indent = i.chars().take_while(|c| *c == ' ' || *c == '\t').count();
 
-    let end = ctx.offset(input);
+            // Only proceed if the indentation matches the condition's indentation
+            // We allow the else block to be indented same or more than the condition
+            // (e.g. aligned with then block), but not less (which would mean it belongs to an outer block)
+            if colon_indent >= condition_indent {
+                // Skip whitespace (indentation)
+                let maybe_after_ws = ws0(i);
+                if let Ok((i, _)) = maybe_after_ws {
+                    // Try to match ':'
+                    if let Ok((i, _)) = char::<_, nom::error::Error<&str>>(':')(i) {
+                        // Check if it's :? (else-if) or plain : (else)
+                        let peek_result = ws0(i);
+                        if let Ok((peek_i, _)) = peek_result {
+                            if peek_i.starts_with('?') {
+                                // This is :?, not a plain else - don't consume
+                                (input, None)
+                            } else {
+                                // Found plain else (:)
+                                // Skip optional line ending after :
+                                let (i, _) = opt(line_ending::<_, nom::error::Error<&str>>)(i)
+                                    .unwrap_or((i, None));
+                                // Parse else block body
+                                if let Ok((i, block)) = indented_block(i, ctx) {
+                                    (i, Some(block))
+                                } else {
+                                    (i, None)
+                                }
+                            }
+                        } else {
+                            // Can't peek after :, so it's not an else block
+                            (input, None)
+                        }
+                    } else {
+                        // No : found
+                        (input, None)
+                    }
+                } else {
+                    // Failed to skip whitespace
+                    (input, None)
+                }
+            } else {
+                // Indentation doesn't match - this ':' is not for this condition
+                (input, None)
+            }
+        } else {
+            // Failed to skip line endings
+            (input, None)
+        }
+    };
+
+    let end = ctx.offset(final_input);
     Ok((
-        input,
+        final_input,
         Statement::Condition {
             condition,
             then_block,
@@ -1059,7 +1374,7 @@ fn condition_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'
 }
 
 /// Parse any statement
-fn statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Statement> {
+fn statement<'a>(input: &'a str, ctx: &'a ParseContext<'a>) -> IResult<&'a str, Statement> {
     alt((
         |i| function_definition(i, ctx),
         |i| for_loop(i, ctx),
@@ -1068,10 +1383,21 @@ fn statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Sta
     ))(input)
 }
 
+/// Parse optional trailing comment (comments at end of line)
+fn trailing_comment(input: &str) -> IResult<&str, ()> {
+    let (input, _) = ws0(input)?;
+    let (input, _) = opt(line_comment)(input)?;
+    Ok((input, ()))
+}
+
 /// Parse a complete program
-pub fn parse_program<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Program> {
+pub fn parse_program<'a>(input: &'a str, ctx: &'a ParseContext<'a>) -> IResult<&'a str, Program> {
     let start = ctx.offset(input);
-    let (input, statements) = many0(terminated(|i| statement(i, ctx), many0(line_ending)))(input)?;
+    // Parse statements terminated by optional trailing comment + line endings
+    let (input, statements) = many0(terminated(
+        |i| statement(i, ctx),
+        tuple((trailing_comment, many0(line_ending))),
+    ))(input)?;
     let (input, _) = multispace0(input)?;
 
     let end = ctx.offset(input);
@@ -1085,15 +1411,20 @@ pub fn parse_program<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a 
 }
 
 /// Preprocess input to handle line continuations (^ prefix)
-fn preprocess_line_continuations(input: &str) -> String {
+pub fn preprocess_line_continuations(input: &str) -> String {
+    // Check if input ends with newline and which type
+    let has_trailing_newline = input.ends_with('\n');
+    let has_crlf = input.contains("\r\n");
+
     let mut result = String::new();
     let mut lines = input.lines().peekable();
-    let has_crlf = input.contains("\r\n");
+    let mut last_line_was_comment = false;
 
     while let Some(line) = lines.next() {
         // Check if line starts with ^ (after whitespace)
         let trimmed = line.trim_start();
-        if trimmed.starts_with('^') {
+        
+        if trimmed.starts_with('^') && !last_line_was_comment {
             // This is a continuation line - remove ^ and append to previous line
             // Remove the last line ending from result
             if result.ends_with("\r\n") {
@@ -1104,9 +1435,25 @@ fn preprocess_line_continuations(input: &str) -> String {
             // Remove the ^ and append the rest
             let continuation = &trimmed[1..];
             result.push_str(continuation);
+            
+            // Update comment status for the combined line
+            // If we appended to a non-comment, it remains non-comment
+            // (unless the continuation itself starts with //, but that would be weird syntax like x=1//comment)
+            // But strictly speaking, if we append, we are extending the previous line.
+            // If previous line was not comment, the combined line is not a comment line (it has code at start).
+            last_line_was_comment = false; 
         } else {
-            // Regular line - add it as-is
-            result.push_str(line);
+            // Regular line OR continuation after comment (which we treat as new line)
+            if trimmed.starts_with('^') {
+                // It was a continuation but previous line was comment, so we treat as new line
+                // But we still strip the ^ because it was intended as continuation marker
+                let content = &trimmed[1..];
+                result.push_str(content);
+                last_line_was_comment = content.trim_start().starts_with("//");
+            } else {
+                result.push_str(line);
+                last_line_was_comment = trimmed.starts_with("//");
+            }
         }
 
         // Add line ending if there are more lines
@@ -1116,6 +1463,15 @@ fn preprocess_line_continuations(input: &str) -> String {
             } else {
                 result.push('\n');
             }
+        }
+    }
+
+    // Preserve trailing newline if it was present in the input
+    if has_trailing_newline {
+        if has_crlf {
+            result.push_str("\r\n");
+        } else {
+            result.push('\n');
         }
     }
 

@@ -67,6 +67,14 @@ pub trait Visitor {
             } => {
                 self.visit_for(variable, range, body);
             }
+            Statement::ForIn {
+                variable,
+                collection,
+                body,
+                ..
+            } => {
+                self.visit_for_in(variable, collection, body);
+            }
             Statement::While {
                 condition, body, ..
             } => {
@@ -151,6 +159,13 @@ pub trait Visitor {
         }
     }
 
+    fn visit_for_in(&mut self, _variable: &str, collection: &Expression, body: &[Statement]) {
+        self.visit_expression(collection);
+        for statement in body {
+            self.visit_statement(statement);
+        }
+    }
+
     fn visit_while(&mut self, condition: &Expression, body: &[Statement]) {
         self.visit_expression(condition);
         for statement in body {
@@ -164,6 +179,7 @@ pub trait Visitor {
         match expression {
             Expression::Integer(..) => {}
             Expression::Float(..) => {}
+            Expression::Boolean(..) => {}
             Expression::String(..) => {}
             Expression::Identifier(..) => {}
             Expression::New { .. } => {}

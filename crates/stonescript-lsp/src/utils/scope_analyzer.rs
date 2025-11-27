@@ -50,6 +50,20 @@ impl ScopeAnalyzer {
 
     fn analyze_statement(&mut self, statement: &Statement) {
         match statement {
+            Statement::ForIn {
+                variable,
+                collection,
+                body,
+                ..
+            } => {
+                self.analyze_expression(collection);
+                let _scope = self.enter_scope();
+                self.add_variable(variable.clone());
+                for stmt in body {
+                    self.analyze_statement(stmt);
+                }
+                self.exit_scope();
+            }
             Statement::Assignment { target, value, .. } => {
                 // Extract variable name from target and add to current scope
                 if let Expression::Identifier(name, _) = target {
@@ -170,6 +184,9 @@ impl ScopeAnalyzer {
 
     fn analyze_expression(&mut self, expression: &Expression) {
         match expression {
+            Expression::Boolean(_, _) => {
+                // Boolean literals don't need scope analysis
+            }
             Expression::Identifier(name, _) => {
                 // Reference to a variable - could track usage here
                 let _ = self.find_variable(name);

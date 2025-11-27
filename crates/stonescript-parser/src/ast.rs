@@ -86,10 +86,17 @@ pub enum Statement {
         value: Option<Expression>,
         span: Span,
     },
-    /// For loop
+    /// For loop with range
     For {
         variable: String,
         range: (Expression, Expression),
+        body: Vec<Statement>,
+        span: Span,
+    },
+    /// For-in loop (iterate over collection)
+    ForIn {
+        variable: String,
+        collection: Expression,
         body: Vec<Statement>,
         span: Span,
     },
@@ -121,6 +128,7 @@ impl Statement {
             Statement::FunctionDefinition { span, .. } => Some(*span),
             Statement::Return { span, .. } => Some(*span),
             Statement::For { span, .. } => Some(*span),
+            Statement::ForIn { span, .. } => Some(*span),
             Statement::While { span, .. } => Some(*span),
             Statement::Import { span, .. } => Some(*span),
             Statement::Comment(_, span) => Some(*span),
@@ -144,6 +152,8 @@ pub enum Expression {
     Integer(i64, Span),
     /// Float literal
     Float(f64, Span),
+    /// Boolean literal
+    Boolean(bool, Span),
     /// String literal
     String(String, Span),
     /// Identifier (variable or property)
@@ -198,6 +208,7 @@ impl Expression {
         match self {
             Expression::Integer(_, span) => *span,
             Expression::Float(_, span) => *span,
+            Expression::Boolean(_, span) => *span,
             Expression::String(_, span) => *span,
             Expression::Identifier(_, span) => *span,
             Expression::Property { span, .. } => *span,

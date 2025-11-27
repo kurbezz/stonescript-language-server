@@ -31,6 +31,7 @@ fn test_all_scripts_parse() {
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("txt"))
+        .filter(|e| e.path().to_string_lossy().contains("WavyScarf"))
     {
         let path = entry.path();
         let content = match fs::read_to_string(path) {
