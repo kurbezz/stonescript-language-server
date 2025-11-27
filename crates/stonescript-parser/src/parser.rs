@@ -368,7 +368,10 @@ fn base_expression<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a st
 }
 
 /// Parse interpolated expression (@expr@)
-fn interpolated_expression<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Expression> {
+fn interpolated_expression<'a>(
+    input: &'a str,
+    ctx: &ParseContext<'a>,
+) -> IResult<&'a str, Expression> {
     let (input, _) = char('@')(input)?;
     let (input, expr) = expression(input, ctx)?;
     let (input, _) = char('@')(input)?;
@@ -528,46 +531,16 @@ fn quoted_string<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str,
 fn ascii_block<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Expression> {
     let start = ctx.offset(input);
 
-    // Check for fullwidth opening bracket ［ followed by "ascii"
-    // We need to peek ahead to avoid consuming the bracket if it's not an ascii block
-    let has_fullwidth_open = if input.starts_with('［') {
-        let after_bracket = &input['［'.len_utf8()..];
-        after_bracket.starts_with("ascii")
-    } else {
-        false
-    };
-    
-    let input = if has_fullwidth_open {
-        &input['［'.len_utf8()..]
-    } else {
-        input
-    };
-
+    // Check if this starts with 'ascii' keyword (not consuming any brackets)
     let (input, _) = tag("ascii")(input)?;
-    // Allow optional line ending after 'ascii' keyword (for output statements like '...,ascii\ncontent\nasciiend')
+
+    // Allow optional line ending after 'ascii' keyword
     let (input, _) = opt(line_ending)(input)?;
     let (input, content) = take_until("asciiend")(input)?;
     let (input, _) = tag("asciiend")(input)?;
 
-    // If we had a fullwidth opening bracket, we MUST have a closing bracket
-    // Otherwise, the closing bracket is optional (for backwards compatibility)
-    let input = if has_fullwidth_open {
-        if input.starts_with('］') {
-            &input['］'.len_utf8()..]
-        } else {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Char,
-            )));
-        }
-    } else {
-        // No opening bracket, so closing bracket is optional
-        if input.starts_with('］') {
-            &input['］'.len_utf8()..]
-        } else {
-            input
-        }
-    };
+    // Don't consume any closing bracket here - let the caller handle brackets
+    // This allows ascii blocks to work both standalone and inside arrays
 
     let end = ctx.offset(input);
     Ok((
@@ -829,19 +802,19 @@ fn output_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a s
     // >x,y,color,ascii
     // >`x,y,color,ascii
     // >`x,y,text
-    
+
     let (input, position) = opt(|input| {
         // Optional backtick
         let (input, _) = opt(char('`'))(input)?;
-        
+
         // Parse x
         let (input, x) = expression(input, ctx)?;
         let (input, _) = tuple((ws0, char(','), ws0))(input)?;
-        
+
         // Parse y
         let (input, y) = expression(input, ctx)?;
         let (input, _) = tuple((ws0, char(','), ws0))(input)?;
-        
+
         // Check for optional color
         let peek = input.trim_start();
         let (input, _) = if peek.starts_with('#') || peek.starts_with('@') {
@@ -852,7 +825,7 @@ fn output_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a s
         } else {
             (input, ())
         };
-        
+
         Ok((input, (x, y)))
     })(input)?;
 
@@ -1423,7 +1396,7 @@ pub fn preprocess_line_continuations(input: &str) -> String {
     while let Some(line) = lines.next() {
         // Check if line starts with ^ (after whitespace)
         let trimmed = line.trim_start();
-        
+
         if trimmed.starts_with('^') && !last_line_was_comment {
             // This is a continuation line - remove ^ and append to previous line
             // Remove the last line ending from result
@@ -1435,13 +1408,13 @@ pub fn preprocess_line_continuations(input: &str) -> String {
             // Remove the ^ and append the rest
             let continuation = &trimmed[1..];
             result.push_str(continuation);
-            
+
             // Update comment status for the combined line
             // If we appended to a non-comment, it remains non-comment
             // (unless the continuation itself starts with //, but that would be weird syntax like x=1//comment)
             // But strictly speaking, if we append, we are extending the previous line.
             // If previous line was not comment, the combined line is not a comment line (it has code at start).
-            last_line_was_comment = false; 
+            last_line_was_comment = false;
         } else {
             // Regular line OR continuation after comment (which we treat as new line)
             if trimmed.starts_with('^') {
