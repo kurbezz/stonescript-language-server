@@ -309,10 +309,10 @@ fn postfix_expression<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a
         // Try function call (arguments)
         if let Ok((next_input, _)) = char::<_, nom::error::Error<&str>>('(')(input) {
             if let Ok((next_input, _)) = ws0(next_input) {
-                if let Ok((next_input, args)) =
-                    separated_list0(delimited(ws0, char(','), ws0), |i| {
-                        simple_expression(i, ctx)
-                    })(next_input)
+                if let Ok((next_input, args)) = separated_list0(
+                    delimited(ws0, char(','), ws0),
+                    |i| expression(i, ctx),
+                )(next_input)
                 {
                     if let Ok((next_input, _)) = ws0(next_input) {
                         if let Ok((next_input, _)) =
