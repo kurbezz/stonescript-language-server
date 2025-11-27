@@ -199,9 +199,16 @@ impl CompletionProvider {
         // Add game state queries
         for query in self.game_state {
             items.push(CompletionItem {
-                label: query.name.to_string(),
+                label: format!("?{}", query.name),
                 kind: Some(CompletionItemKind::VARIABLE),
-                detail: Some(query.description.to_string()),
+                detail: Some(format!("{}: {}", query.name, query.return_type)),
+                documentation: Some(Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: format!(
+                        "```stonescript\n?{}: {}\n```\n\n{}",
+                        query.name, query.return_type, query.description
+                    ),
+                })),
                 ..Default::default()
             });
         }
@@ -212,20 +219,19 @@ impl CompletionProvider {
             items.push(CompletionItem {
                 label: var.name.clone(),
                 kind: Some(CompletionItemKind::VARIABLE),
-                detail: Some("user variable".to_string()),
+                detail: Some(format!("var: {}", var.inferred_type)),
+                documentation: Some(Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: format!(
+                        "```stonescript\nvar {}: {}\n```",
+                        var.name, var.inferred_type
+                    ),
+                })),
                 ..Default::default()
             });
         }
 
-        // Add user-defined functions
-        for func in scope.get_functions() {
-            items.push(CompletionItem {
-                label: func.name.clone(),
-                kind: Some(CompletionItemKind::FUNCTION),
-                detail: Some(format!("func({})", func.parameters.join(", "))),
-                ..Default::default()
-            });
-        }
+        // Note: StoneScript doesn't support user-defined functions
 
         items
     }
@@ -252,7 +258,14 @@ impl CompletionProvider {
                     items.push(CompletionItem {
                         label: prop.name.to_string(),
                         kind: Some(CompletionItemKind::PROPERTY),
-                        detail: Some(prop.description.to_string()),
+                        detail: Some(format!("{}: {}", prop.name, prop.typ)),
+                        documentation: Some(Documentation::MarkupContent(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: format!(
+                                "```stonescript\n{}.{}: {}\n```\n\n{}",
+                                object, prop.name, prop.typ, prop.description
+                            ),
+                        })),
                         ..Default::default()
                     });
                 }
@@ -263,50 +276,115 @@ impl CompletionProvider {
         match object {
             "math" => {
                 for func in MATH_FUNCTIONS {
+                    let params = func
+                        .parameters
+                        .iter()
+                        .map(|p| format!("{}: {}", p.name, p.typ))
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     items.push(CompletionItem {
                         label: func.name.to_string(),
                         kind: Some(CompletionItemKind::FUNCTION),
-                        detail: Some(func.description.to_string()),
+                        detail: Some(format!("{}({}) -> {}", func.name, params, func.return_type)),
+                        documentation: Some(Documentation::MarkupContent(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: format!(
+                                "```stonescript\nmath.{}({}) -> {}\n```\n\n{}",
+                                func.name, params, func.return_type, func.description
+                            ),
+                        })),
                         ..Default::default()
                     });
                 }
             }
             "string" => {
                 for func in STRING_FUNCTIONS {
+                    let params = func
+                        .parameters
+                        .iter()
+                        .map(|p| format!("{}: {}", p.name, p.typ))
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     items.push(CompletionItem {
                         label: func.name.to_string(),
                         kind: Some(CompletionItemKind::FUNCTION),
-                        detail: Some(func.description.to_string()),
+                        detail: Some(format!("{}({}) -> {}", func.name, params, func.return_type)),
+                        documentation: Some(Documentation::MarkupContent(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: format!(
+                                "```stonescript\nstring.{}({}) -> {}\n```\n\n{}",
+                                func.name, params, func.return_type, func.description
+                            ),
+                        })),
                         ..Default::default()
                     });
                 }
             }
             "storage" => {
                 for func in STORAGE_FUNCTIONS {
+                    let params = func
+                        .parameters
+                        .iter()
+                        .map(|p| format!("{}: {}", p.name, p.typ))
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     items.push(CompletionItem {
                         label: func.name.to_string(),
                         kind: Some(CompletionItemKind::FUNCTION),
-                        detail: Some(func.description.to_string()),
+                        detail: Some(format!("{}({}) -> {}", func.name, params, func.return_type)),
+                        documentation: Some(Documentation::MarkupContent(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: format!(
+                                "```stonescript\nstorage.{}({}) -> {}\n```\n\n{}",
+                                func.name, params, func.return_type, func.description
+                            ),
+                        })),
                         ..Default::default()
                     });
                 }
             }
             "music" => {
                 for func in MUSIC_FUNCTIONS {
+                    let params = func
+                        .parameters
+                        .iter()
+                        .map(|p| format!("{}: {}", p.name, p.typ))
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     items.push(CompletionItem {
                         label: func.name.to_string(),
                         kind: Some(CompletionItemKind::FUNCTION),
-                        detail: Some(func.description.to_string()),
+                        detail: Some(format!("{}({}) -> {}", func.name, params, func.return_type)),
+                        documentation: Some(Documentation::MarkupContent(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: format!(
+                                "```stonescript\nmusic.{}({}) -> {}\n```\n\n{}",
+                                func.name, params, func.return_type, func.description
+                            ),
+                        })),
                         ..Default::default()
                     });
                 }
             }
             "ui" => {
                 for func in UI_FUNCTIONS {
+                    let params = func
+                        .parameters
+                        .iter()
+                        .map(|p| format!("{}: {}", p.name, p.typ))
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     items.push(CompletionItem {
                         label: func.name.to_string(),
                         kind: Some(CompletionItemKind::FUNCTION),
-                        detail: Some(func.description.to_string()),
+                        detail: Some(format!("{}({}) -> {}", func.name, params, func.return_type)),
+                        documentation: Some(Documentation::MarkupContent(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: format!(
+                                "```stonescript\nui.{}({}) -> {}\n```\n\n{}",
+                                func.name, params, func.return_type, func.description
+                            ),
+                        })),
                         ..Default::default()
                     });
                 }
@@ -456,18 +534,12 @@ impl CompletionProvider {
             items.push(CompletionItem {
                 label: var.name.clone(),
                 kind: Some(CompletionItemKind::VARIABLE),
+                detail: Some(format!("var: {}", var.inferred_type)),
                 ..Default::default()
             });
         }
 
-        // Functions
-        for func in scope.get_functions() {
-            items.push(CompletionItem {
-                label: func.name.clone(),
-                kind: Some(CompletionItemKind::FUNCTION),
-                ..Default::default()
-            });
-        }
+        // Note: StoneScript doesn't support user-defined functions
 
         items
     }

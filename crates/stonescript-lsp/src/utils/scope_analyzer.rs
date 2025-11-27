@@ -1,5 +1,6 @@
 //! Scope analysis using nom-based AST
 
+use crate::data::Type;
 use std::collections::HashMap;
 use stonescript_parser::ast::{Expression, Program, Statement};
 
@@ -8,6 +9,7 @@ use stonescript_parser::ast::{Expression, Program, Statement};
 pub struct Variable {
     pub name: String,
     pub scope_id: usize,
+    pub inferred_type: Type,
 }
 
 /// Scope information
@@ -67,7 +69,9 @@ impl ScopeAnalyzer {
             Statement::Assignment { target, value, .. } => {
                 // Extract variable name from target and add to current scope
                 if let Expression::Identifier(name, _) = target {
-                    self.add_variable(name.clone());
+                    // Try to infer type from value
+                    let inferred_type = crate::utils::type_inference::infer_type(value);
+                    self.add_variable_with_type(name.clone(), inferred_type);
                 }
                 // Analyze both target and value expressions
                 self.analyze_expression(target);
@@ -235,9 +239,14 @@ impl ScopeAnalyzer {
     }
 
     fn add_variable(&mut self, name: String) {
+        self.add_variable_with_type(name, Type::Unknown);
+    }
+
+    fn add_variable_with_type(&mut self, name: String, inferred_type: Type) {
         let variable = Variable {
             name: name.clone(),
             scope_id: self.current_scope,
+            inferred_type,
         };
 
         self.scopes[self.current_scope]

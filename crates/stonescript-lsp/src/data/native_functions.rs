@@ -373,7 +373,18 @@ pub const ALL_FUNCTIONS: &[&[FunctionSignature]] = &[
 ];
 
 /// Get function by namespace and name
-pub fn get_function(namespace: &str, name: &str) -> Option<&'static FunctionSignature> {
+pub fn get_function(name: &str) -> Option<&'static FunctionSignature> {
+    ALL_FUNCTIONS
+        .iter()
+        .flat_map(|funcs| funcs.iter())
+        .find(|f| f.name == name)
+}
+
+/// Get function by namespace and name (exact match)
+pub fn get_function_in_namespace(
+    namespace: &str,
+    name: &str,
+) -> Option<&'static FunctionSignature> {
     ALL_FUNCTIONS
         .iter()
         .flat_map(|funcs| funcs.iter())
