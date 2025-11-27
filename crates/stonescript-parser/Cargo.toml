@@ -6,10 +6,18 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-tree-sitter = { workspace = true }
+# Parser library
+nom = "7.1"
 
-[build-dependencies]
-cc = "1"
+# Optional serialization support
+serde = { version = "1", features = ["derive"], optional = true }
+
+[dev-dependencies]
+walkdir = "2.4"
+
+[features]
+default = []
+serde = ["dep:serde"]
 
 [lib]
 path = "src/lib.rs"

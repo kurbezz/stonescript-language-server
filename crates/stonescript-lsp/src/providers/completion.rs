@@ -13,8 +13,8 @@ use crate::data::ui::{UI_METHODS, UI_PROPERTIES};
 use crate::data::*;
 use crate::utils::ScopeAnalyzer;
 use regex;
+use stonescript_parser::{Expression, Program, Statement};
 use tower_lsp::lsp_types::*;
-use tree_sitter::{Point, Tree};
 
 #[derive(Debug)]
 pub enum CompletionContext {
@@ -51,15 +51,13 @@ impl CompletionProvider {
 
     pub fn provide_completion(
         &self,
-        tree: &Tree,
+        ast: &Program,
         position: Position,
         source: &str,
         scope: &ScopeAnalyzer,
     ) -> Vec<CompletionItem> {
-        let point = Point::new(position.line as usize, position.character as usize);
-
         // Determine context from AST
-        let context = self.determine_context(tree, point, source);
+        let context = self.determine_context(ast, position, source);
 
         let mut items = match context {
             CompletionContext::TopLevel => self.complete_top_level(scope),
@@ -85,19 +83,29 @@ impl CompletionProvider {
         items
     }
 
-    fn determine_context(&self, tree: &Tree, point: Point, source: &str) -> CompletionContext {
+    fn determine_context(
+        &self,
+        _ast: &Program,
+        position: Position,
+        source: &str,
+    ) -> CompletionContext {
         // First, try text-based detection for incomplete expressions
-        // This handles cases like "?loc=" where the tree has ERROR nodes
+        // This handles cases like "?loc=" where the AST might not be complete
         let line_start = source
             .lines()
-            .take(point.row)
+            .take(position.line as usize)
             .map(|line| line.len() + 1)
             .sum::<usize>();
-        let line_end = line_start + source.lines().nth(point.row).map(|l| l.len()).unwrap_or(0);
+        let line_end = line_start
+            + source
+                .lines()
+                .nth(position.line as usize)
+                .map(|l| l.len())
+                .unwrap_or(0);
 
         if line_end > line_start {
             let line_text = &source[line_start..line_end];
-            let cursor_col = point.column;
+            let cursor_col = position.character as usize;
 
             // Check for patterns like "?loc=" or "?foe=" with cursor after =
             if let Some(text_before_cursor) = line_text.get(..cursor_col.min(line_text.len())) {
@@ -163,105 +171,8 @@ impl CompletionProvider {
             }
         }
 
-        let node = tree
-            .root_node()
-            .named_descendant_for_point_range(point, point);
-
-        if let Some(current_node) = node {
-            // Check if we're after a dot
-            if current_node.kind() == "." {
-                // Find the object before the dot
-                if let Some(prev) = current_node.prev_sibling() {
-                    if prev.kind() == "identifier" {
-                        let text = prev.utf8_text(source.as_bytes()).unwrap_or("");
-                        return CompletionContext::MemberAccess(text.to_string());
-                    }
-                }
-            }
-
-            // Walk up the tree to find context
-            let mut check_node = Some(current_node);
-            while let Some(node) = check_node {
-                // Check if we're in a binary expression
-                if node.kind() == "binary_expression" {
-                    // Find the left side of the comparison
-                    if let Some(left_node) = node.child(0) {
-                        if left_node.kind() == "identifier" {
-                            let text = left_node.utf8_text(source.as_bytes()).unwrap_or("");
-                            // Check if cursor is after the operator (for completion)
-                            let operator_end = if let Some(op_node) = node.child(1) {
-                                op_node.end_position()
-                            } else {
-                                left_node.end_position()
-                            };
-
-                            // If cursor is after the operator, provide value completion
-                            if point.column >= operator_end.column {
-                                return CompletionContext::BinaryWithIdentifier(text.to_string());
-                            }
-                        }
-                    }
-                }
-
-                // Check if we're in a member expression
-                if node.kind() == "member_expression" {
-                    if let Some(object_node) = node.child_by_field_name("object") {
-                        let text = object_node.utf8_text(source.as_bytes()).unwrap_or("");
-                        return CompletionContext::MemberAccess(text.to_string());
-                    }
-                }
-
-                // Check if we're in a call expression
-                if node.kind() == "call_expression" {
-                    // Try to determine the function being called
-                    if let Some(func_node) = node.child_by_field_name("function") {
-                        if func_node.kind() == "member_expression" {
-                            // namespace.function() call
-                            if let Some(obj) = func_node.child_by_field_name("object") {
-                                if let Some(prop) = func_node.child_by_field_name("property") {
-                                    let namespace = obj.utf8_text(source.as_bytes()).unwrap_or("");
-                                    let function = prop.utf8_text(source.as_bytes()).unwrap_or("");
-                                    return CompletionContext::InsideFunctionCall(
-                                        namespace.to_string(),
-                                        function.to_string(),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    return CompletionContext::FunctionCall;
-                }
-
-                // Check if we're in a conditional
-                if node.kind() == "conditional" {
-                    // Check the expression part of the conditional
-                    if let Some(expr_node) = node.child(1) {
-                        if expr_node.kind() == "binary_expression" {
-                            if let Some(left_node) = expr_node.child(0) {
-                                if left_node.kind() == "identifier" {
-                                    let text = left_node.utf8_text(source.as_bytes()).unwrap_or("");
-                                    let operator_end = if let Some(op_node) = expr_node.child(1) {
-                                        op_node.end_position()
-                                    } else {
-                                        left_node.end_position()
-                                    };
-
-                                    if point.column >= operator_end.column {
-                                        return CompletionContext::BinaryWithIdentifier(
-                                            text.to_string(),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                check_node = node.parent();
-            }
-        }
-
-        // Default to top-level
+        // Default to top-level context
+        // AST-based context detection could be added here in the future
         CompletionContext::TopLevel
     }
 

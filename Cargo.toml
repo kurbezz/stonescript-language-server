@@ -25,8 +25,8 @@ serde_json = "1"
 # Text handling
 ropey = "1.6"
 
-# Parsing
-tree-sitter = "0.20"
+# Parsing - using nom instead of tree-sitter
+nom = "7.1"
 
 # Concurrency
 dashmap = "5"

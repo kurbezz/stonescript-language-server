@@ -2,6 +2,8 @@
 
 A Language Server Protocol (LSP) implementation for the StoneScript programming language, providing intelligent code editing features for StoneScript, the scripting language used in Stone Story RPG.
 
+**Now powered by a pure Rust nom-based parser** - no external C dependencies or build scripts required!
+
 ## Features
 
 - **Syntax Highlighting** - Semantic tokens for enhanced code coloring
@@ -38,16 +40,26 @@ The extension automatically manages LSP updates and provides pre-built binaries 
 For development or custom builds:
 
 ```bash
-# Clone both repositories (LSP depends on tree-sitter grammar)
+# Clone the repository
 git clone https://github.com/kurbezz/stonescript-language-server.git
-git clone https://github.com/kurbezz/tree-sitter-stonescript.git
 
-# Build the LSP
+# Build the LSP (pure Rust, no external dependencies needed!)
 cd stonescript-language-server
 cargo build --release
 ```
 
 The compiled binary will be available at `target/release/stonescript-lsp`.
+
+## Architecture
+
+This LSP uses a custom **nom-based parser** instead of tree-sitter:
+
+- **Pure Rust**: No C dependencies, faster compilation
+- **Type-Safe AST**: Direct access to strongly-typed abstract syntax tree
+- **Flexible**: Easy to extend and modify parser rules
+- **Maintainable**: Simpler codebase without grammar compilation step
+
+See [MIGRATION.md](MIGRATION.md) for details on the parser architecture.
 
 **Important:** The LSP requires the tree-sitter-stonescript repository to be in the parent directory during build. Expected structure:
 ```

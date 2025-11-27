@@ -1,0 +1,5 @@
+func Add(comp)
+  ?loc.loop
+    x = 1
+  ?comp
+    return

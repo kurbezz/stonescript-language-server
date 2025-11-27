@@ -35,7 +35,6 @@ tracing-subscriber = { workspace = true }
 
 # Parser
 stonescript-parser = { path = "../stonescript-parser" }
-tree-sitter = { workspace = true }
 
 # Regex
 regex = "1"

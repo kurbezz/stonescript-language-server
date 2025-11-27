@@ -1,8 +1,8 @@
 //! Definition provider (go-to-definition)
 
 use tower_lsp::lsp_types::*;
-use tree_sitter::{Tree, Point};
 use crate::utils::ScopeAnalyzer;
+use stonescript_parser::Program;
 
 pub struct DefinitionProvider;
 
@@ -13,63 +13,53 @@ impl DefinitionProvider {
 
     pub fn provide_definition(
         &self,
-        tree: &Tree,
+        _ast: &Program,
         position: Position,
         source: &str,
         scope: &ScopeAnalyzer,
-        uri: &Url,
+        _uri: &Url,
     ) -> Option<GotoDefinitionResponse> {
-        let point = Point::new(position.line as usize, position.character as usize);
+        // Simplified approach: extract word at cursor
+        let line = source.lines().nth(position.line as usize)?;
+        let word = self.extract_word_at_position(line, position.character as usize)?;
         
-        let node = tree.root_node()
-            .named_descendant_for_point_range(point, point)?;
-        
-        if node.kind() == "identifier" {
-            let text = node.utf8_text(source.as_bytes()).ok()?;
-            
-            // Check variables
-            let variables = scope.find_variables_at(node.start_byte());
-            if let Some(var) = variables.iter().find(|v| v.name == text) {
-                return Some(GotoDefinitionResponse::Scalar(Location {
-                    uri: uri.clone(),
-                    range: self.byte_range_to_lsp(var.start_byte, var.end_byte, source),
-                }));
-            }
-
-            // Check functions
-            if let Some(func) = scope.get_function(text) {
-                return Some(GotoDefinitionResponse::Scalar(Location {
-                    uri: uri.clone(),
-                    range: self.byte_range_to_lsp(func.start_byte, func.end_byte, source),
-                }));
-            }
+        // Check if variable exists in scope
+        if scope.has_variable(&word) {
+            // TODO: Once AST tracks source positions, return actual definition location
+            // For now, returning None since we can't determine position without tree-sitter
+            None
+        } else {
+            None
         }
-
-        None
     }
 
-    fn byte_range_to_lsp(&self, start: usize, end: usize, source: &str) -> Range {
-        let start_pos = self.byte_to_position(start, source);
-        let end_pos = self.byte_to_position(end, source);
-        Range { start: start_pos, end: end_pos }
-    }
-
-    fn byte_to_position(&self, byte: usize, source: &str) -> Position {
-        let mut line = 0;
-        let mut col = 0;
-        
-        for (i, ch) in source.chars().enumerate() {
-            if i >= byte {
-                break;
-            }
-            if ch == '\n' {
-                line += 1;
-                col = 0;
-            } else {
-                col += 1;
-            }
+    fn extract_word_at_position(&self, line: &str, col: usize) -> Option<String> {
+        if col > line.len() {
+            return None;
         }
 
-        Position { line: line as u32, character: col as u32 }
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            return None;
+        }
+
+        let col = col.min(chars.len());
+
+        // Find word boundaries
+        let mut start = col;
+        while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+            start -= 1;
+        }
+
+        let mut end = col;
+        while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+            end += 1;
+        }
+
+        if start < end {
+            Some(chars[start..end].iter().collect())
+        } else {
+            None
+        }
     }
 }

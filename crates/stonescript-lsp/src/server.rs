@@ -2,10 +2,10 @@
 
 use dashmap::DashMap;
 use ropey::Rope;
+use stonescript_parser::{ast::Program, parse_source};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
-use tree_sitter::Tree;
 
 use crate::providers::*;
 use crate::utils::ScopeAnalyzer;
@@ -13,7 +13,7 @@ use crate::utils::ScopeAnalyzer;
 /// Document information
 struct Document {
     rope: Rope,
-    tree: Tree,
+    ast: Program,
     scope: ScopeAnalyzer,
     version: i32,
 }
@@ -21,7 +21,7 @@ struct Document {
 pub struct Backend {
     client: Client,
     documents: DashMap<String, Document>,
-    
+
     // Providers
     completion: CompletionProvider,
     hover: HoverProvider,
@@ -51,40 +51,70 @@ impl Backend {
 
     fn analyze_document(&self, uri: &str, text: &str, version: i32) {
         let rope = Rope::from_str(text);
-        
-        // Parse with tree-sitter  
-        let tree = match stonescript_parser::parse(text) {
-            Some(t) => t,
-            None => return, // Skip if parse fails
+
+        // Parse with nom-based parser
+        let ast = match parse_source(text) {
+            Ok(program) => program,
+            Err(e) => {
+                // Log parse error and publish diagnostic
+                tracing::error!("Parse error for {}: {}", uri, e);
+
+                // Create a diagnostic for the parse error
+                let diagnostic = Diagnostic {
+                    range: Range {
+                        start: Position {
+                            line: 0,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: 0,
+                            character: 0,
+                        },
+                    },
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    message: format!("Parse error: {}", e),
+                    ..Default::default()
+                };
+
+                let uri_parsed = Url::parse(uri).unwrap();
+                let client = self.client.clone();
+                tokio::spawn(async move {
+                    client
+                        .publish_diagnostics(uri_parsed, vec![diagnostic], None)
+                        .await;
+                });
+
+                return;
+            }
         };
-        
+
         // Analyze scope
         let mut scope = ScopeAnalyzer::new();
-        scope.analyze(&tree, text);
-        
+        scope.analyze_ast(&ast);
+
         // Store document
         self.documents.insert(
             uri.to_string(),
             Document {
                 rope,
-                tree,
+                ast: ast.clone(),
                 scope,
                 version,
             },
         );
-        
+
         // Publish diagnostics
         if let Some(doc) = self.documents.get(uri) {
-            let diagnostics = self.diagnostics.provide_diagnostics(
-                &doc.tree,
-                text,
-                &doc.scope,
-            );
-            
+            let diagnostics = self
+                .diagnostics
+                .provide_diagnostics(&doc.ast, text, &doc.scope);
+
             let uri_parsed = Url::parse(uri).unwrap();
             let client = self.client.clone();
             tokio::spawn(async move {
-                client.publish_diagnostics(uri_parsed, diagnostics, None).await;
+                client
+                    .publish_diagnostics(uri_parsed, diagnostics, None)
+                    .await;
             });
         }
     }
@@ -134,13 +164,13 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri.to_string();
         let text = params.text_document.text;
         let version = params.text_document.version;
-        
+
         self.analyze_document(&uri, &text, version);
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
-        
+
         if let Some(mut doc) = self.documents.get_mut(&uri) {
             for change in params.content_changes {
                 if let Some(range) = change.range {
@@ -149,7 +179,7 @@ impl LanguageServer for Backend {
                         + range.start.character as usize;
                     let end_idx = doc.rope.line_to_char(range.end.line as usize)
                         + range.end.character as usize;
-                    
+
                     doc.rope.remove(start_idx..end_idx);
                     doc.rope.insert(start_idx, &change.text);
                 } else {
@@ -157,10 +187,10 @@ impl LanguageServer for Backend {
                     doc.rope = Rope::from_str(&change.text);
                 }
             }
-            
+
             let text = doc.rope.to_string();
             drop(doc); // Release mutable borrow
-            
+
             self.analyze_document(&uri, &text, params.text_document.version);
         }
     }
@@ -172,15 +202,12 @@ impl LanguageServer for Backend {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri.to_string();
         let position = params.text_document_position.position;
-        
+
         if let Some(doc) = self.documents.get(&uri) {
             let text = doc.rope.to_string();
-            let items = self.completion.provide_completion(
-                &doc.tree,
-                position,
-                &text,
-                &doc.scope,
-            );
+            let items = self
+                .completion
+                .provide_completion(&doc.ast, position, &text, &doc.scope);
             Ok(Some(CompletionResponse::Array(items)))
         } else {
             Ok(None)
@@ -188,29 +215,36 @@ impl LanguageServer for Backend {
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        let uri = params.text_document_position_params.text_document.uri.to_string();
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .to_string();
         let position = params.text_document_position_params.position;
-        
+
         if let Some(doc) = self.documents.get(&uri) {
             let text = doc.rope.to_string();
-            Ok(self.hover.provide_hover(&doc.tree, position, &text, &doc.scope))
+            Ok(self
+                .hover
+                .provide_hover(&doc.ast, position, &text, &doc.scope))
         } else {
             Ok(None)
         }
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
-        let uri = params.text_document_position_params.text_document.uri.to_string();
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .to_string();
         let position = params.text_document_position_params.position;
-        
+
         if let Some(doc) = self.documents.get(&uri) {
             let text = doc.rope.to_string();
-            Ok(self.signature_help.provide_signature_help(
-                &doc.tree,
-                position,
-                &text,
-                &doc.scope,
-            ))
+            Ok(self
+                .signature_help
+                .provide_signature_help(&doc.ast, position, &text, &doc.scope))
         } else {
             Ok(None)
         }
@@ -220,18 +254,18 @@ impl LanguageServer for Backend {
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
-        let uri = params.text_document_position_params.text_document.uri.clone();
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .clone();
         let position = params.text_document_position_params.position;
-        
+
         if let Some(doc) = self.documents.get(&uri.to_string()) {
             let text = doc.rope.to_string();
-            Ok(self.definition.provide_definition(
-                &doc.tree,
-                position,
-                &text,
-                &doc.scope,
-                &uri,
-            ))
+            Ok(self
+                .definition
+                .provide_definition(&doc.ast, position, &text, &doc.scope, &uri))
         } else {
             Ok(None)
         }
@@ -242,10 +276,10 @@ impl LanguageServer for Backend {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = params.text_document.uri.to_string();
-        
+
         if let Some(doc) = self.documents.get(&uri) {
             let text = doc.rope.to_string();
-            let symbols = self.symbols.provide_symbols(&doc.tree, &doc.scope, &text);
+            let symbols = self.symbols.provide_symbols(&doc.ast, &doc.scope, &text);
             Ok(Some(DocumentSymbolResponse::Nested(symbols)))
         } else {
             Ok(None)
@@ -254,7 +288,7 @@ impl LanguageServer for Backend {
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let uri = params.text_document.uri.to_string();
-        
+
         if let Some(doc) = self.documents.get(&uri) {
             let text = doc.rope.to_string();
             let edits = self.formatting.provide_formatting(&text);
@@ -269,10 +303,12 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = params.text_document.uri.to_string();
-        
+
         if let Some(doc) = self.documents.get(&uri) {
             let text = doc.rope.to_string();
-            let tokens = self.semantic_tokens.provide_semantic_tokens(&doc.tree, &text);
+            let tokens = self
+                .semantic_tokens
+                .provide_semantic_tokens(&doc.ast, &text);
             Ok(Some(SemanticTokensResult::Tokens(tokens)))
         } else {
             Ok(None)
