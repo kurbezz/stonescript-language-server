@@ -7,8 +7,8 @@ pub mod parser;
 
 // Re-export main types and functions
 pub use ast::{
-    BinaryOperator, ElseIf, Expression, InterpolationPart, Position, Program, Span, Statement,
-    UnaryOperator,
+    AssignmentOperator, BinaryOperator, ElseIf, Expression, InterpolationPart, Position, Program,
+    Span, Statement, UnaryOperator,
 };
 pub use parser::parse;
 
@@ -395,6 +395,123 @@ mod tests {
             "Failed to parse function call with two args: {:?}",
             result
         );
+    }
+
+    #[test]
+    fn test_parse_compound_assignment() {
+        let result = parse_source("x += 5");
+        assert!(
+            result.is_ok(),
+            "Failed to parse compound assignment: {:?}",
+            result
+        );
+        let program = result.unwrap();
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::Assignment {
+                target, op, value, ..
+            } => {
+                match target {
+                    Expression::Identifier(name, _) => assert_eq!(name, "x"),
+                    _ => panic!("Expected Identifier target"),
+                }
+                assert_eq!(*op, AssignmentOperator::AddAssign);
+                match value {
+                    Expression::Integer(5, _) => {}
+                    _ => panic!("Expected Integer value"),
+                }
+            }
+            _ => panic!("Expected Assignment statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_compound_assignment_with_index() {
+        let result = parse_source("arr[i] += 1");
+        assert!(
+            result.is_ok(),
+            "Failed to parse compound assignment with index: {:?}",
+            result
+        );
+        let program = result.unwrap();
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::Assignment { target, op, .. } => {
+                match target {
+                    Expression::IndexAccess { .. } => {}
+                    _ => panic!("Expected IndexAccess target, got {:?}", target),
+                }
+                assert_eq!(*op, AssignmentOperator::AddAssign);
+            }
+            _ => panic!("Expected Assignment statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_simple_condition_with_else() {
+        // Test simple condition with else - minimal case
+        // Based on actual DragController.txt structure with CRLF
+        let source = "func test()\r\n  ?x > 5\r\n    return true\r\n  :\r\n    return false";
+        let result = parse_source(source);
+        assert!(
+            result.is_ok(),
+            "Failed to parse simple condition with else: {:?}",
+            result
+        );
+        let program = result.unwrap();
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::FunctionDefinition { body, .. } => {
+                assert_eq!(body.len(), 1);
+                match &body[0] {
+                    Statement::Condition {
+                        then_block,
+                        else_block,
+                        ..
+                    } => {
+                        assert_eq!(then_block.len(), 1);
+                        assert!(
+                            else_block.is_some(),
+                            "else_block should be Some, but got None"
+                        );
+                        if let Some(else_stmts) = else_block {
+                            assert_eq!(else_stmts.len(), 1);
+                        }
+                    }
+                    _ => panic!("Expected Condition statement in function body"),
+                }
+            }
+            _ => panic!("Expected FunctionDefinition statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_multiline_condition_with_continuation() {
+        // Test multi-line condition with line continuation (^) and else
+        // Note: else (:) is at same indent as then block
+        let source = "?x >= compx &\n^x < (compx + w)\n  return true\n  :\n    return false";
+        let result = parse_source(source);
+        assert!(
+            result.is_ok(),
+            "Failed to parse multi-line condition with continuation: {:?}",
+            result
+        );
+        let program = result.unwrap();
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::Condition {
+                then_block,
+                else_block,
+                ..
+            } => {
+                assert_eq!(then_block.len(), 1);
+                assert!(else_block.is_some());
+                if let Some(else_stmts) = else_block {
+                    assert_eq!(else_stmts.len(), 1);
+                }
+            }
+            _ => panic!("Expected Condition statement"),
+        }
     }
 
     #[test]

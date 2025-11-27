@@ -175,6 +175,19 @@ fn binary_operator(input: &str) -> IResult<&str, BinaryOperator> {
     ))(input)
 }
 
+/// Parse assignment operator (=, +=, -=, *=, /=, %=)
+fn assignment_operator(input: &str) -> IResult<&str, AssignmentOperator> {
+    use crate::ast::AssignmentOperator;
+    alt((
+        value(AssignmentOperator::AddAssign, tag("+=")),
+        value(AssignmentOperator::SubtractAssign, tag("-=")),
+        value(AssignmentOperator::MultiplyAssign, tag("*=")),
+        value(AssignmentOperator::DivideAssign, tag("/=")),
+        value(AssignmentOperator::ModuloAssign, tag("%=")),
+        value(AssignmentOperator::Assign, char('=')),
+    ))(input)
+}
+
 /// Parse an lvalue expression (valid on left side of assignment)
 /// Only allows: identifier, property access, index access (no function calls)
 fn lvalue_expression<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str, Expression> {
@@ -690,6 +703,7 @@ fn var_assignment<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str
                     input,
                     Statement::Assignment {
                         target: Expression::Identifier(name.clone(), name_span),
+                        op: AssignmentOperator::Assign,
                         value,
                         span: ctx.make_span(start, end),
                     },
@@ -705,6 +719,7 @@ fn var_assignment<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a str
             input,
             Statement::Assignment {
                 target: Expression::Identifier(name.clone(), name_span),
+                op: AssignmentOperator::Assign,
                 value: Expression::Integer(0, ctx.make_span(end, end)), // Default value
                 span: ctx.make_span(start, end),
             },
@@ -736,7 +751,7 @@ fn assignment_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&
     }
 
     let (input, _) = ws0(input)?;
-    let (input, _) = char('=')(input)?;
+    let (input, op) = assignment_operator(input)?;
     let (input, _) = ws0(input)?;
     let (input, value) = expression(input, ctx)?;
 
@@ -745,6 +760,7 @@ fn assignment_statement<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&
         input,
         Statement::Assignment {
             target,
+            op,
             value,
             span: ctx.make_span(start, end),
         },

@@ -62,6 +62,7 @@ pub enum Statement {
     /// Variable declaration or assignment
     Assignment {
         target: Expression,
+        op: AssignmentOperator,
         value: Expression,
         span: Span,
     },
@@ -248,6 +249,17 @@ pub enum UnaryOperator {
     Negate,    // -
     Increment, // ++
     Decrement, // --
+}
+
+/// Assignment operators
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignmentOperator {
+    Assign,         // =
+    AddAssign,      // +=
+    SubtractAssign, // -=
+    MultiplyAssign, // *=
+    DivideAssign,   // /=
+    ModuloAssign,   // %=
 }
 
 impl fmt::Display for BinaryOperator {
