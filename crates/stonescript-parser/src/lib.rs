@@ -504,8 +504,8 @@ mod tests {
     #[test]
     fn test_parse_multiline_condition_with_continuation() {
         // Test multi-line condition with line continuation (^) and else
-        // Note: else (:) is at same indent as then block
-        let source = "?x >= compx &\n^x < (compx + w)\n  return true\n  :\n    return false";
+        // Note: else (:) should be at same indent as condition (?)
+        let source = "?x >= compx &\n^x < (compx + w)\n  return true\n:\n  return false";
         let result = parse_source(source);
         assert!(
             result.is_ok(),

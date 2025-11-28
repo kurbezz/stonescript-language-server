@@ -1,7 +1,7 @@
 //! Hover provider with type information
 
 use crate::data::*;
-use crate::utils::{infer_type_with_scope, ScopeAnalyzer};
+use crate::utils::{infer_type_with_scope, ScopeAnalyzer, FunctionStub};
 use stonescript_parser::ast::{Expression, Position as AstPosition, Program, Statement};
 use tower_lsp::lsp_types::*;
 
@@ -50,6 +50,11 @@ impl HoverProvider {
                 // Check if it's a game state query
                 if let Some(stripped) = name.strip_prefix('?') {
                     return self.hover_for_game_state(stripped);
+                }
+
+                // Check if it's a user-defined function
+                if let Some(func) = scope.find_function(name) {
+                    return self.hover_for_user_function(func);
                 }
 
                 // Check if it's a variable
@@ -293,6 +298,19 @@ impl HoverProvider {
         })
     }
 
+    fn hover_for_user_function(&self, func: &FunctionStub) -> Option<Hover> {
+        let params = func.parameters.join(", ");
+        let sig = format!("func {}({})", func.name, params);
+
+        Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!("```stonescript\n{}\n```\n\nUser-defined function", sig),
+            }),
+            range: None,
+        })
+    }
+
     fn text_based_hover(
         &self,
         position: Position,
@@ -305,6 +323,11 @@ impl HoverProvider {
         // Check if it's a game state query
         if let Some(stripped) = word.strip_prefix('?') {
             return self.hover_for_game_state(stripped);
+        }
+
+        // Check if it's a user-defined function
+        if let Some(func) = scope.find_function(&word) {
+            return self.hover_for_user_function(func);
         }
 
         // Check if it's a variable

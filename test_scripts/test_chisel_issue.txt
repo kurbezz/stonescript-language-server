@@ -1,0 +1,33 @@
+// Simplified test case reproducing the Chisel.txt issue
+// Lines 844-856 scenario
+
+func LoadSaveSlot()
+  var LoadAllLayers = string.Split(storage.Get("SaveSlot"), "☹", true)  // Line 5 (like 844)
+  Load = [LoadAllLayers, SaveRecover, AddRedoList]
+  SaveRecover()
+
+func GenerateSaveLoadButtons(Saving, StorageList, Row, Column)
+  var SLButton = ui.AddButton()  // Line 10 (like 850)
+  var MiddleNumber = math.CeilToInt(Column / 2)
+  var BWidth = 5
+  var BHeight = 3
+  
+  SLButton.h = BHeight           // Line 15 (like 856)
+  SLButton.w = BWidth            // Click on SLButton here should go to line 10
+  SLButton.y = -50               // not to LoadAllLayers on line 5
+  SLButton.text = "New"
+
+// Test multiple scopes with same variable name
+func FirstFunction()
+  var myVar = "first"            // Line 23
+  > myVar                         // Should go to line 23
+
+func SecondFunction()
+  var myVar = "second"           // Line 27
+  > myVar                         // Should go to line 27
+  
+  func NestedInSecond()
+    var myVar = "nested"         // Line 31
+    > myVar                       // Should go to line 31, not line 27
+    
+  > myVar                         // Should go back to line 27

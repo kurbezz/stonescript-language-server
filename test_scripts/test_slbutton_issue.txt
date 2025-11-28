@@ -1,0 +1,54 @@
+// Test case for SLButton scope issue from Chisel.txt
+// Reproduces the bug where clicking on SLButton on line 17
+// incorrectly jumps to LoadAllLayers instead of SLButton definition
+
+func ButtonLoad(btn)
+  var ButtonSelected = 1
+  var LoadAllLayers = "this should not be found"
+  > LoadAllLayers
+
+func GenerateSaveLoadButtons(Saving, StorageList, Row, Column)
+  var SLButton = ui.AddButton()
+  var MiddleNumber = 5
+  var PositionOffset = Column - MiddleNumber
+  var BWidth = 5
+  var BHeight = 3
+
+  // When clicking on SLButton below (line 17), should go to line 11, NOT line 7
+  SLButton.h = BHeight
+  SLButton.w = BWidth
+  SLButton.y = -10
+  SLButton.text = "Test"
+  SLButton.x = 0
+
+  // All references to SLButton in this function should resolve to line 11
+  > SLButton.h
+  > SLButton.w
+  > SLButton.y
+
+// Test with nested scopes
+func TestNestedScopes()
+  var outerVar = "outer"
+  ?outerVar ! null
+    var innerVar = "inner"
+    var sameName = "in then block"
+    // sameName here should resolve to line 34
+    > sameName
+  :
+    var sameName = "in else block"
+    // sameName here should resolve to line 38
+    > sameName
+
+  // outerVar here should resolve to line 30
+  > outerVar
+
+// Test with multiple variables with same name in different functions
+func FirstFunc()
+  var commonName = "first"
+  // commonName should resolve to line 47
+  > commonName
+
+func SecondFunc()
+  var commonName = "second"
+  // commonName should resolve to line 52
+  > commonName

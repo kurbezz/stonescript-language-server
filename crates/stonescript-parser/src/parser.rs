@@ -25,9 +25,53 @@ impl<'a> ParseContext<'a> {
 
     /// Calculate position from byte offset
     fn position_at(&self, offset: usize) -> Position {
-        let text = &self.source[..offset.min(self.source.len())];
-        let line = text.matches('\n').count();
-        let column = text.lines().last().map(|l| l.len()).unwrap_or(0);
+        // Ensure offset is at a valid UTF-8 character boundary
+        let safe_offset = if offset <= self.source.len() {
+            // Find the nearest character boundary at or before offset
+            let mut safe = offset;
+            while safe > 0 && !self.source.is_char_boundary(safe) {
+                safe -= 1;
+            }
+            safe
+        } else {
+            self.source.len()
+        };
+
+        let text = &self.source[..safe_offset];
+
+        // Count lines by iterating through characters and properly handling CRLF
+        let mut line = 0;
+        let mut line_start_byte = 0;
+        let mut chars_iter = text.chars().peekable();
+        let mut byte_offset = 0;
+
+        while let Some(ch) = chars_iter.next() {
+            if ch == '\n' {
+                line += 1;
+                byte_offset += ch.len_utf8();
+                line_start_byte = byte_offset;
+            } else if ch == '\r' {
+                // Check if next character is \n (CRLF)
+                if chars_iter.peek() == Some(&'\n') {
+                    // This is CRLF - consume the \n and count as one line break
+                    chars_iter.next(); // consume \n
+                    line += 1;
+                    byte_offset += 2; // \r\n is 2 bytes total
+                    line_start_byte = byte_offset;
+                } else {
+                    // Just \r (old Mac style), treat as line ending
+                    line += 1;
+                    byte_offset += 1;
+                    line_start_byte = byte_offset;
+                }
+            } else {
+                byte_offset += ch.len_utf8();
+            }
+        }
+
+        // Calculate column in characters (not bytes) from line start
+        let column = text[line_start_byte..].chars().count();
+
         Position::new(line, column)
     }
 
@@ -424,11 +468,24 @@ fn postfix_expression<'a>(input: &'a str, ctx: &ParseContext<'a>) -> IResult<&'a
 
         // Try function call (arguments)
         if let Ok((next_input, _)) = char::<_, nom::error::Error<&str>>('(')(input) {
-            if let Ok((next_input, _)) = ws_multi(next_input) {
+            if let Ok((after_ws, _)) = ws_multi(next_input) {
+                // Check if we have empty parentheses ()
+                if let Ok((next_input, _)) = char::<_, nom::error::Error<&str>>(')')(after_ws) {
+                    let end = ctx.offset(next_input);
+                    expr = Expression::FunctionCall {
+                        function: Box::new(expr),
+                        args: vec![],
+                        span: ctx.make_span(start, end),
+                    };
+                    input = next_input;
+                    continue;
+                }
+
+                // Parse arguments
                 if let Ok((next_input, args)) =
                     separated_list0(delimited(ws_multi, char(','), ws_multi), |i| {
                         expression(i, ctx)
-                    })(next_input)
+                    })(after_ws)
                 {
                     if let Ok((next_input, _)) = ws_multi(next_input) {
                         if let Ok((next_input, _)) =
@@ -1026,10 +1083,16 @@ fn function_definition<'a>(
     let (input, _) = char(')')(input)?;
     let (input, _) = opt(line_ending)(input)?;
 
+    // Track position before parsing body
+    let body_start_offset = ctx.offset(input);
+
     // Parse body
     let (input, body) = indented_block(input, ctx)?;
 
+    // Calculate end position from the remaining input after parsing body
+    // indented_block returns the correct remaining input after consuming all body statements
     let end = ctx.offset(input);
+
     Ok((
         input,
         Statement::FunctionDefinition {
@@ -1250,17 +1313,13 @@ fn condition_statement<'a>(
     // Parse else-if branches
     let (input, else_ifs) = many0(|i| {
         let start = ctx.offset(i);
-        eprintln!("[else-if] Trying to parse else-if at offset {}", start);
         let (i, _) = opt(line_ending)(i)?;
         let (i, _) = ws0(i)?;
         let (i, _) = tag(":?")(i)?;
-        eprintln!("[else-if] Found :? at offset {}", ctx.offset(i));
         let (i, _) = ws0(i)?;
         let (i, cond) = expression(i, ctx)?;
-        eprintln!("[else-if] Parsed condition");
         let (i, _) = opt(line_ending)(i)?;
         let (i, block) = indented_block(i, ctx)?;
-        eprintln!("[else-if] Parsed block");
         let end = ctx.offset(i);
         Ok((
             i,
@@ -1509,6 +1568,143 @@ mod tests {
     }
 
     #[test]
+    fn test_chisel_load_all_layers_not_in_function() {
+        // This test checks if LoadAllLayers is incorrectly parsed as part of GenerateSaveLoadButtons
+        let source = std::fs::read_to_string("../../test_scripts/Chisel.txt")
+            .expect("Could not read Chisel.txt");
+
+        let result = parse(&source);
+        assert!(result.is_ok(), "Parse failed: {:?}", result.err());
+
+        let ast = result.unwrap();
+
+        println!("\n=== ALL ASSIGNMENTS IN AST ===");
+
+        // First, print ALL top-level statements to understand structure
+        for (idx, stmt) in ast.statements.iter().enumerate() {
+            match stmt {
+                Statement::Assignment { target, span, .. } => {
+                    if let Expression::Identifier(var_name, _) = target {
+                        println!(
+                            "[{}] Top-level assignment: {} at span {:?}",
+                            idx, var_name, span
+                        );
+                    }
+                }
+                Statement::FunctionDefinition { name, span, .. } => {
+                    println!("[{}] Function: {} at span {:?}", idx, name, span);
+                }
+                Statement::For { span, .. } => {
+                    println!("[{}] For loop at span {:?}", idx, span);
+                }
+                _ => {}
+            }
+        }
+
+        // Check if LoadAllLayers appears inside GenerateSaveLoadButtons function body
+        let mut load_all_in_function = false;
+        let mut slbutton_in_function = false;
+
+        for stmt in &ast.statements {
+            if let Statement::FunctionDefinition {
+                name, body, span, ..
+            } = stmt
+            {
+                if name == "GenerateSaveLoadButtons" {
+                    println!("\n=== GenerateSaveLoadButtons function ===");
+                    println!("Function span: {:?}", span);
+                    println!("Function has {} statements in body", body.len());
+
+                    for (idx, func_stmt) in body.iter().enumerate() {
+                        match func_stmt {
+                            Statement::Assignment { target, span, .. } => {
+                                if let Expression::Identifier(var_name, _) = target {
+                                    println!(
+                                        "  [{}] Assignment to {} at span {:?}",
+                                        idx, var_name, span
+                                    );
+                                    if var_name == "LoadAllLayers" {
+                                        load_all_in_function = true;
+                                        println!("    !!! LoadAllLayers INCORRECTLY found in function body !!!");
+                                    }
+                                    if var_name == "SLButton" {
+                                        slbutton_in_function = true;
+                                    }
+                                }
+                            }
+                            _ => {
+                                println!("  [{}] Other statement: {:?}", idx, func_stmt.span());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if load_all_in_function {
+            println!("\n!!! PARSER BUG CONFIRMED !!!");
+            println!(
+                "LoadAllLayers is incorrectly parsed as part of GenerateSaveLoadButtons function"
+            );
+        } else {
+            println!("\nParser is correct: LoadAllLayers is NOT inside the function body.");
+        }
+
+        if slbutton_in_function {
+            println!("SLButton correctly found inside function body.");
+        }
+
+        // The real issue must be in the LSP definition provider logic, not the parser
+    }
+
+    #[test]
+    fn test_ascii_block_position_calculation() {
+        // Test that position calculation is correct after ascii blocks
+        let source = r#"var TITLE = "Chisel"
+var VERSION = "v1.2"
+var AUTHOR = "fruloo"
+
+var LOGO = ascii
+,╦◘
+♦║▼
+║║║
+asciiend
+
+var AfterLogo = "test"
+"#;
+
+        let result = parse(source);
+        assert!(result.is_ok(), "Parse failed: {:?}", result.err());
+
+        let ast = result.unwrap();
+
+        // Find AfterLogo assignment
+        let mut after_logo_span = None;
+        for stmt in &ast.statements {
+            if let Statement::Assignment { target, span, .. } = stmt {
+                if let Expression::Identifier(name, _) = target {
+                    if name == "AfterLogo" {
+                        after_logo_span = Some(*span);
+                        break;
+                    }
+                }
+            }
+        }
+
+        assert!(after_logo_span.is_some(), "AfterLogo not found");
+        let span = after_logo_span.unwrap();
+
+        println!("AfterLogo span: {:?}", span);
+
+        // AfterLogo is on line 11 (0-based: line 10)
+        // The ascii block spans lines 5-8 (4 lines of content inside ascii...asciiend)
+        assert_eq!(
+            span.start.line, 10,
+            "AfterLogo should be on line 10 (0-based)"
+        );
+    }
+
+    #[test]
     fn test_chained_conditionals() {
         let input = "?x = 1\n  y = 2\n:?x = 3\n  y = 4\n:\n  y = 5\n";
         let ctx = ParseContext::new(input);
@@ -1589,5 +1785,287 @@ mod tests {
 
         let result = parse(input);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_position_at_lf() {
+        let source = "line1\nline2\nline3";
+        let ctx = ParseContext::new(source);
+
+        // Start of file
+        assert_eq!(ctx.position_at(0), Position::new(0, 0));
+
+        // End of line1 (before \n)
+        assert_eq!(ctx.position_at(5), Position::new(0, 5));
+
+        // After \n (start of line2)
+        assert_eq!(ctx.position_at(6), Position::new(1, 0));
+
+        // End of line2
+        assert_eq!(ctx.position_at(11), Position::new(1, 5));
+
+        // Start of line3
+        assert_eq!(ctx.position_at(12), Position::new(2, 0));
+
+        // End of line3
+        assert_eq!(ctx.position_at(17), Position::new(2, 5));
+    }
+
+    #[test]
+    fn test_position_at_crlf() {
+        let source = "line1\r\nline2\r\nline3";
+        let ctx = ParseContext::new(source);
+
+        // Start of file
+        assert_eq!(ctx.position_at(0), Position::new(0, 0));
+
+        // End of line1 (before \r\n)
+        assert_eq!(ctx.position_at(5), Position::new(0, 5));
+
+        // After \r\n (start of line2)
+        assert_eq!(ctx.position_at(7), Position::new(1, 0));
+
+        // End of line2
+        assert_eq!(ctx.position_at(12), Position::new(1, 5));
+
+        // Start of line3
+        assert_eq!(ctx.position_at(14), Position::new(2, 0));
+
+        // End of line3
+        assert_eq!(ctx.position_at(19), Position::new(2, 5));
+    }
+
+    #[test]
+    fn test_position_at_mixed_line_endings() {
+        let source = "line1\nline2\r\nline3\rline4";
+        let ctx = ParseContext::new(source);
+
+        assert_eq!(ctx.position_at(0), Position::new(0, 0));
+        assert_eq!(ctx.position_at(6), Position::new(1, 0)); // After \n
+        assert_eq!(ctx.position_at(13), Position::new(2, 0)); // After \r\n
+        assert_eq!(ctx.position_at(19), Position::new(3, 0)); // After \r
+    }
+
+    #[test]
+    fn test_position_at_utf8() {
+        let source = "тест\nлиния2";
+        let ctx = ParseContext::new(source);
+
+        // 'тест' is 4 characters but 8 bytes (each Cyrillic char is 2 bytes)
+        assert_eq!(ctx.position_at(0), Position::new(0, 0));
+        assert_eq!(ctx.position_at(8), Position::new(0, 4)); // End of 'тест'
+        assert_eq!(ctx.position_at(9), Position::new(1, 0)); // Start of line2
+    }
+
+    #[test]
+    fn test_empty_parentheses_function_call() {
+        let source = "var btn = ui.AddButton()\nbtn.h = 10\n";
+        let result = parse(source);
+        assert!(
+            result.is_ok(),
+            "Failed to parse empty parentheses: {:?}",
+            result.err()
+        );
+
+        let ast = result.unwrap();
+        assert_eq!(ast.statements.len(), 2, "Should have 2 statements");
+
+        // First should be assignment with function call
+        match &ast.statements[0] {
+            Statement::Assignment { value, .. } => match value {
+                Expression::FunctionCall { args, .. } => {
+                    assert_eq!(args.len(), 0, "Should have 0 arguments");
+                }
+                _ => panic!("Expected FunctionCall expression"),
+            },
+            _ => panic!("Expected Assignment statement"),
+        }
+    }
+
+    #[test]
+    fn test_empty_parentheses_multiline() {
+        let source = "var btn = ui.AddButton(\n)\nbtn.h = 10\n";
+        let result = parse(source);
+        assert!(
+            result.is_ok(),
+            "Failed to parse multiline empty parentheses: {:?}",
+            result.err()
+        );
+
+        let ast = result.unwrap();
+        assert_eq!(ast.statements.len(), 2, "Should have 2 statements");
+    }
+
+    #[test]
+    fn test_function_body_with_empty_parens() {
+        let source = r#"func Test()
+  var x = SomeCall()
+  var y = 10
+  return y
+"#;
+        let result = parse(source);
+        assert!(
+            result.is_ok(),
+            "Failed to parse function with empty parens call: {:?}",
+            result.err()
+        );
+
+        let ast = result.unwrap();
+        assert_eq!(ast.statements.len(), 1, "Should have 1 function");
+
+        match &ast.statements[0] {
+            Statement::FunctionDefinition { body, .. } => {
+                assert_eq!(body.len(), 3, "Function body should have 3 statements");
+            }
+            _ => panic!("Expected FunctionDefinition"),
+        }
+    }
+
+    #[test]
+    fn test_indented_block_after_ascii() {
+        let source = r#"var logo = ascii
+ABC
+DEF
+asciiend
+func Test()
+  var x = 1
+  var y = 2
+var after = 3
+"#;
+        let result = parse(source);
+        assert!(
+            result.is_ok(),
+            "Failed to parse indented block after ascii: {:?}",
+            result.err()
+        );
+
+        let ast = result.unwrap();
+        assert_eq!(
+            ast.statements.len(),
+            3,
+            "Should have 3 top-level statements"
+        );
+
+        // Check function has correct body
+        match &ast.statements[1] {
+            Statement::FunctionDefinition { name, body, .. } => {
+                assert_eq!(name, "Test");
+                assert_eq!(body.len(), 2, "Function should have 2 statements in body");
+            }
+            _ => panic!("Expected FunctionDefinition at index 1"),
+        }
+    }
+
+    #[test]
+    fn test_chisel_slbutton_scope() {
+        // This is the core regression test for the reported bug
+        let source = r#"func GenerateSaveLoadButtons()
+  var container = ui.AddList()
+  container.vertical = true
+  container.h = BHeight
+
+  var SLButton = ui.AddButton()
+  SLButton.h = BHeight
+
+var LoadAllLayers = ui.AddButton()
+"#;
+        let result = parse(source);
+        assert!(result.is_ok(), "Parse failed: {:?}", result.err());
+
+        let ast = result.unwrap();
+        assert_eq!(
+            ast.statements.len(),
+            2,
+            "Should have function + top-level assignment"
+        );
+
+        // Check function body
+        match &ast.statements[0] {
+            Statement::FunctionDefinition { name, body, .. } => {
+                assert_eq!(name, "GenerateSaveLoadButtons");
+                assert_eq!(body.len(), 5, "Function should have 5 statements (container assignment, vertical=true, h assignment, SLButton assignment, SLButton.h assignment)");
+
+                // Verify SLButton is in function body
+                let slbutton_in_body = body.iter().any(|stmt| {
+                    if let Statement::Assignment { target, .. } = stmt {
+                        if let Expression::Identifier(name, _) = target {
+                            return name == "SLButton";
+                        }
+                    }
+                    false
+                });
+                assert!(slbutton_in_body, "SLButton should be in function body");
+            }
+            _ => panic!("Expected FunctionDefinition"),
+        }
+
+        // Check LoadAllLayers is top-level
+        match &ast.statements[1] {
+            Statement::Assignment { target, .. } => {
+                if let Expression::Identifier(name, _) = target {
+                    assert_eq!(
+                        name, "LoadAllLayers",
+                        "Second statement should be LoadAllLayers"
+                    );
+                } else {
+                    panic!("Expected identifier in assignment");
+                }
+            }
+            _ => panic!("Expected Assignment for LoadAllLayers"),
+        }
+    }
+
+    #[test]
+    fn test_indented_block_stops_at_dedent() {
+        let source = r#"func Test()
+  var x = 1
+  var y = 2
+var outside = 3
+"#;
+        let result = parse(source);
+        assert!(result.is_ok(), "Parse failed: {:?}", result.err());
+
+        let ast = result.unwrap();
+        assert_eq!(
+            ast.statements.len(),
+            2,
+            "Should have function + outside var"
+        );
+
+        match &ast.statements[0] {
+            Statement::FunctionDefinition { body, .. } => {
+                assert_eq!(
+                    body.len(),
+                    2,
+                    "Function body should have exactly 2 statements"
+                );
+            }
+            _ => panic!("Expected FunctionDefinition"),
+        }
+    }
+
+    #[test]
+    fn test_empty_lines_in_function() {
+        let source = r#"func Test()
+  var x = 1
+
+  var y = 2
+
+  var z = 3
+"#;
+        let result = parse(source);
+        assert!(result.is_ok(), "Parse failed: {:?}", result.err());
+
+        let ast = result.unwrap();
+        match &ast.statements[0] {
+            Statement::FunctionDefinition { body, .. } => {
+                assert_eq!(
+                    body.len(),
+                    3,
+                    "Should have 3 statements despite empty lines"
+                );
+            }
+            _ => panic!("Expected FunctionDefinition"),
+        }
     }
 }

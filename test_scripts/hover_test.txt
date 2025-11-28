@@ -1,0 +1,12 @@
+// Test script for hover functionality
+var x = 10
+
+func TestFunction(param1, param2)
+  var result = param1 + param2
+  return result
+
+func AnotherFunc()
+  var y = TestFunction(5, 3)
+  return y
+
+var z = AnotherFunc()

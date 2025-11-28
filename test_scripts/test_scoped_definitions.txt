@@ -1,0 +1,40 @@
+// Test scope-aware go-to-definition
+// This test ensures that variable definitions are found in the correct scope
+
+var globalVar = "global"
+
+func FirstFunction()
+  var localVar = "first"
+  var sameName = "in first function"
+  > localVar
+  > sameName
+
+func SecondFunction()
+  var localVar = "second"
+  var sameName = "in second function"
+  // When clicking on sameName below, should go to line 13, not line 8
+  > sameName
+  // When clicking on localVar below, should go to line 12, not line 7
+  > localVar
+
+func ThirdFunction(param)
+  var outerVar = param
+  ?outerVar > 10
+    var innerVar = outerVar * 2
+    // When clicking on innerVar, should go to line 23, not elsewhere
+    > innerVar
+    // When clicking on outerVar, should go to line 21
+    > outerVar
+  :
+    var innerVar = "different"
+    // When clicking on innerVar here, should go to line 29
+    > innerVar
+
+func TestNestedScopes()
+  var x = 1
+  ?x > 0
+    var y = 2
+    for i = 1..5
+      var z = i
+      // x from line 35, y from line 37, z from line 39, i is loop variable
+      > x + y + z + i

@@ -2,7 +2,7 @@
 
 use crate::data::Type;
 use std::collections::HashMap;
-use stonescript_parser::ast::{Expression, Program, Statement};
+use stonescript_parser::ast::{Expression, Position, Program, Span, Statement};
 
 /// A variable in scope
 #[derive(Debug, Clone)]
@@ -10,6 +10,7 @@ pub struct Variable {
     pub name: String,
     pub scope_id: usize,
     pub inferred_type: Type,
+    pub definition_span: Option<Span>,
 }
 
 /// Scope information
@@ -18,6 +19,7 @@ pub struct Scope {
     pub id: usize,
     pub parent: Option<usize>,
     pub variables: HashMap<String, Variable>,
+    pub span: Option<Span>,
 }
 
 /// Analyzer for variable scopes
@@ -25,6 +27,7 @@ pub struct ScopeAnalyzer {
     scopes: Vec<Scope>,
     next_scope_id: usize,
     current_scope: usize,
+    functions: HashMap<String, FunctionStub>,
 }
 
 impl ScopeAnalyzer {
@@ -34,12 +37,14 @@ impl ScopeAnalyzer {
             id: 0,
             parent: None,
             variables: HashMap::new(),
+            span: None,
         };
 
         Self {
             scopes: vec![global_scope],
             next_scope_id: 1,
             current_scope: 0,
+            functions: HashMap::new(),
         }
     }
 
@@ -137,6 +142,13 @@ impl ScopeAnalyzer {
             Statement::FunctionDefinition {
                 name, params, body, ..
             } => {
+                self.functions.insert(
+                    name.clone(),
+                    FunctionStub {
+                        name: name.clone(),
+                        parameters: params.clone(),
+                    },
+                );
                 self.add_variable(name.clone());
                 let _scope = self.enter_scope();
                 for param in params {
@@ -247,6 +259,7 @@ impl ScopeAnalyzer {
             name: name.clone(),
             scope_id: self.current_scope,
             inferred_type,
+            definition_span: None,
         };
 
         self.scopes[self.current_scope]
@@ -262,6 +275,7 @@ impl ScopeAnalyzer {
             id: scope_id,
             parent: Some(self.current_scope),
             variables: HashMap::new(),
+            span: None,
         };
 
         self.scopes.push(scope);
@@ -335,9 +349,11 @@ impl ScopeAnalyzer {
     /// Note: StoneScript doesn't support user-defined functions, returns empty vec
     /// This is a compatibility shim for code migrating from tree-sitter
     pub fn get_functions(&self) -> Vec<FunctionStub> {
-        // StoneScript doesn't have user-defined functions
-        // This method exists only for compatibility during migration
-        Vec::new()
+        self.functions.values().cloned().collect()
+    }
+
+    pub fn find_function(&self, name: &str) -> Option<&FunctionStub> {
+        self.functions.get(name)
     }
 }
 

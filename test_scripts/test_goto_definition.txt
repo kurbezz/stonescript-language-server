@@ -1,0 +1,25 @@
+// Test go-to-definition improvements
+
+var globalVar = 10
+
+func TestFunc(param1, param2)
+  var localVar = param1 + param2
+  ?localVar > 10
+    var innerVar = localVar * 2
+    > innerVar
+  :
+    > "Less than 10"
+  return localVar
+
+func Main()
+  var result = TestFunc(5, 7)
+  ?result ! null
+    var ui_panel = ui.AddPanel()
+    ui_panel.x = 10
+    ui_panel.y = 20
+    
+    for i = 1..10
+      var loopVar = i * 2
+      > loopVar
+      
+    > result

@@ -1,0 +1,25 @@
+// Test case for variable scope priority in go-to-definition
+// When clicking on a variable usage, should find the closest definition in scope
+
+var globalVar = "global"
+
+func OuterFunc()
+  var outerVar = "outer"
+  
+  func InnerFunc1()
+    var localVar = "inner1"  // Line 10
+    > localVar                // Click here should go to line 10
+  
+  func InnerFunc2()
+    var localVar = "inner2"  // Line 14
+    > localVar                // Click here should go to line 14
+    
+func TestScopePriority()
+  var SLButton = "first"     // Line 18
+  > SLButton                  // Should go to line 18
+  
+  func Nested()
+    var SLButton = "nested"  // Line 22
+    > SLButton                // Should go to line 22, not line 18
+    
+  > SLButton                  // Should still go to line 18
